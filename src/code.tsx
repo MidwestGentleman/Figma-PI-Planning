@@ -278,19 +278,14 @@ function createIconShape(
     ellipse.y = iconY;
     iconShape = ellipse;
   } else if (templateType === 'initiative') {
-    // Orange upside-down triangle for initiative (4x larger)
-    const initiativeIconSize = iconSize * 4; // 4x larger (128px instead of 32px)
+    // Orange regular triangle for initiative
     const polygon = figma.createPolygon();
-    polygon.resize(initiativeIconSize, initiativeIconSize);
+    polygon.resize(iconSize, iconSize);
     polygon.pointCount = 3;
-    polygon.rotation = 180; // Rotate 180 degrees to make it upside down
+    // No rotation - regular triangle pointing up
     polygon.fills = [{ type: 'SOLID', color: { r: 0.9, g: 0.6, b: 0.1 } }]; // Orange
-    // Position in top-right corner: right edge at cardWidth - 20, top at iconY
-    // Need to pass cardWidth to calculate correctly, but we can derive it from iconX
-    // iconX = cardWidth - 20 - iconSize, so cardWidth - 20 = iconX + iconSize
-    const rightEdgePosition = iconX + iconSize; // Right edge of normal icon position
-    polygon.x = rightEdgePosition - initiativeIconSize; // Left edge of large icon
-    polygon.y = iconY; // Keep same top position
+    polygon.x = iconX;
+    polygon.y = iconY;
     iconShape = polygon;
   } else if (templateType === 'task') {
     // Forest green square for task
