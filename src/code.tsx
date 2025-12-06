@@ -278,13 +278,19 @@ function createIconShape(
     ellipse.y = iconY;
     iconShape = ellipse;
   } else if (templateType === 'initiative') {
-    // Orange triangle for initiative
+    // Orange upside-down triangle for initiative (4x larger)
+    const initiativeIconSize = iconSize * 4; // 4x larger (128px instead of 32px)
     const polygon = figma.createPolygon();
-    polygon.resize(iconSize, iconSize);
+    polygon.resize(initiativeIconSize, initiativeIconSize);
     polygon.pointCount = 3;
+    polygon.rotation = 180; // Rotate 180 degrees to make it upside down
     polygon.fills = [{ type: 'SOLID', color: { r: 0.9, g: 0.6, b: 0.1 } }]; // Orange
-    polygon.x = iconX;
-    polygon.y = iconY;
+    // Position in top-right corner: right edge at cardWidth - 20, top at iconY
+    // Need to pass cardWidth to calculate correctly, but we can derive it from iconX
+    // iconX = cardWidth - 20 - iconSize, so cardWidth - 20 = iconX + iconSize
+    const rightEdgePosition = iconX + iconSize; // Right edge of normal icon position
+    polygon.x = rightEdgePosition - initiativeIconSize; // Left edge of large icon
+    polygon.y = iconY; // Keep same top position
     iconShape = polygon;
   } else if (templateType === 'task') {
     // Forest green square for task
@@ -296,14 +302,14 @@ function createIconShape(
     rect.y = iconY;
     iconShape = rect;
   } else if (templateType === 'spike') {
-    // Light brown square for spike
-    const rect = figma.createRectangle();
-    rect.resize(iconSize, iconSize);
-    rect.fills = [{ type: 'SOLID', color: { r: 0.7, g: 0.6, b: 0.4 } }]; // Light brown
-    rect.cornerRadius = 4;
-    rect.x = iconX;
-    rect.y = iconY;
-    iconShape = rect;
+    // Light brown 8-pointed star for spike
+    const star = figma.createStar();
+    star.resize(iconSize, iconSize);
+    star.pointCount = 8;
+    star.fills = [{ type: 'SOLID', color: { r: 0.7, g: 0.6, b: 0.4 } }]; // Light brown
+    star.x = iconX;
+    star.y = iconY;
+    iconShape = star;
   } else if (templateType === 'test') {
     // Blue diamond for test
     const diamond = figma.createPolygon();
@@ -609,7 +615,7 @@ function mapJiraIssueToTemplate(issue: { [key: string]: string }): {
         Description: description || 'User story description...', // Use Description for imports
         'Acceptance Criteria':
           acceptanceCriteria || '- Criterion 1\n- Criterion 2\n- Criterion 3',
-        'Story Points': storyPoints || '#',
+        'Story Points': storyPoints || '?',
         Priority: priority || 'Medium',
         Assignee: issue['Assignee'] || 'Unassigned',
       },
@@ -772,6 +778,12 @@ async function createTemplateCardWithPosition(
   const titleContent = (customData && customData.title) || template.title;
   titleText.characters = wrapTitleText(titleContent, 40); // Wrap at 40 characters
   titleText.fontSize = 24;
+  // Make title bold
+  try {
+    titleText.fontName = { family: 'Inter', style: 'Bold' };
+  } catch (e) {
+    console.warn('Could not set Bold font for title, using default');
+  }
   // Use appropriate text color based on background brightness
   titleText.fills = [
     {
@@ -1025,7 +1037,7 @@ async function importCardsFromCSV(csvText: string) {
       }
     }
 
-    return 'No Sprint'; // Default for issues without sprint
+    return 'Backlog'; // Default for issues without sprint
   }
 
   // Group issues by Sprint
