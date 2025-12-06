@@ -10,6 +10,7 @@ const TEMPLATES = {
       { label: 'Description', value: 'Business objective description...' },
       { label: 'Business Value', value: 'High' },
       { label: 'Status', value: 'Planning' },
+      { label: 'Priority Rank', value: '#' },
     ],
   },
   milestone: {
@@ -112,6 +113,126 @@ async function ensureFontsLoaded(): Promise<void> {
   return fontsLoadedPromise;
 }
 
+/**
+ * Determines which field should be displayed as a large number for a given template type.
+ * @param templateType - The template type
+ * @returns The field label to display as large number, or null if none
+ */
+function getLargeNumberField(
+  templateType: keyof typeof TEMPLATES
+): string | null {
+  if (templateType === 'theme') {
+    return 'Priority Rank';
+  } else if (
+    templateType === 'userStory' ||
+    templateType === 'task' ||
+    templateType === 'spike' ||
+    templateType === 'test'
+  ) {
+    return 'Story Points';
+  }
+  return null;
+}
+
+/**
+ * Gets the background color for a template type (matches the icon color).
+ * @param templateType - The template type
+ * @returns RGB color object for the template type
+ */
+function getTemplateBackgroundColor(templateType: keyof typeof TEMPLATES): {
+  r: number;
+  g: number;
+  b: number;
+} {
+  const colors: { [key: string]: { r: number; g: number; b: number } } = {
+    theme: { r: 0.4, g: 0.2, b: 0.6 }, // Dark purple
+    milestone: { r: 0.3, g: 0.7, b: 0.3 }, // Green
+    userStory: { r: 1.0, g: 0.8, b: 0.6 }, // Light orange
+    epic: { r: 0.2, g: 0.5, b: 0.9 }, // Blue
+    initiative: { r: 0.9, g: 0.6, b: 0.1 }, // Orange
+    task: { r: 0.6, g: 0.8, b: 1.0 }, // Light blue
+    spike: { r: 0.1, g: 0.2, b: 0.5 }, // Dark blue
+    test: { r: 0.2, g: 0.5, b: 0.9 }, // Blue
+  };
+  return colors[templateType] || { r: 0.5, g: 0.5, b: 0.5 }; // Default gray
+}
+
+/**
+ * Determines if text should be light (white) or dark (black) based on background brightness.
+ * Uses relative luminance formula to determine contrast.
+ * @param backgroundColor - RGB color object
+ * @returns True if text should be light (white), false if dark (black)
+ */
+function shouldUseLightText(backgroundColor: {
+  r: number;
+  g: number;
+  b: number;
+}): boolean {
+  // Calculate relative luminance (perceived brightness)
+  // Formula: 0.299*R + 0.587*G + 0.114*B
+  const luminance =
+    0.299 * backgroundColor.r +
+    0.587 * backgroundColor.g +
+    0.114 * backgroundColor.b;
+  // Use light text if background is dark (luminance < 0.5)
+  return luminance < 0.5;
+}
+
+/**
+ * Checks if a template type has an Assignee field.
+ * @param templateType - The template type
+ * @returns True if the template has an Assignee field
+ */
+function hasAssigneeField(templateType: keyof typeof TEMPLATES): boolean {
+  return (
+    templateType === 'userStory' ||
+    templateType === 'task' ||
+    templateType === 'spike' ||
+    templateType === 'test'
+  );
+}
+
+/**
+ * Wraps text at word boundaries when it exceeds the character limit.
+ * @param text - The text to wrap
+ * @param maxLength - Maximum characters per line (default: 40)
+ * @returns Text with line breaks inserted
+ */
+function wrapTitleText(text: string, maxLength: number = 40): string {
+  if (!text || text.length <= maxLength) {
+    return text;
+  }
+
+  const words = text.split(' ');
+  const lines: string[] = [];
+  let currentLine = '';
+
+  for (const word of words) {
+    // If adding this word would exceed the limit, start a new line
+    if (
+      currentLine.length > 0 &&
+      (currentLine + ' ' + word).length > maxLength
+    ) {
+      lines.push(currentLine);
+      currentLine = word;
+    } else {
+      // Add word to current line
+      if (currentLine.length > 0) {
+        currentLine += ' ' + word;
+      } else {
+        currentLine = word;
+      }
+    }
+  }
+
+  // Add the last line
+  if (currentLine.length > 0) {
+    lines.push(currentLine);
+  }
+
+  return lines.join('\n');
+}
+
 // Helper function to create icon shape based on template type
 function createIconShape(
   templateType: keyof typeof TEMPLATES,
@@ -207,97 +328,16 @@ function createIconShape(
 }
 
 // Function to create a template card with custom data
+// This is a convenience wrapper that uses createTemplateCardWithPosition
+// positioned at the viewport center, with selection and scroll behavior
 async function createTemplateCard(
   templateType: keyof typeof TEMPLATES,
   customData?: { [key: string]: string }
 ) {
-  const template = TEMPLATES[templateType];
+  // Use the reusable function to create the card (position defaults to viewport center)
+  const frame = await createTemplateCardWithPosition(templateType, customData);
 
-  // Ensure fonts are loaded (uses cache if already loaded)
-  await ensureFontsLoaded();
-
-  // Get the current viewport center
-  const viewport = figma.viewport.center;
-
-  // Create a frame to hold the template
-  const frame = figma.createFrame();
-  frame.name = (customData && customData.title) || template.title;
-  frame.x = viewport.x;
-  frame.y = viewport.y;
-  frame.resize(400, 300);
-  // Transparent background with slight tint for visibility
-  frame.fills = [{ type: 'SOLID', color: { r: 1, g: 1, b: 1 }, opacity: 0.85 }];
-  frame.strokes = [{ type: 'SOLID', color: { r: 0.8, g: 0.8, b: 0.8 } }];
-  frame.cornerRadius = 8;
-
-  // Add icon shape based on template type (right-justified)
-  const iconSize = 32;
-  const iconX = 400 - 20 - iconSize; // Right edge minus padding minus icon size
-  const iconY = 20;
-  const iconShape = createIconShape(templateType, iconX, iconY);
-  frame.appendChild(iconShape);
-
-  // Add title text (left side)
-  const titleText = figma.createText();
-  titleText.characters = (customData && customData.title) || template.title;
-  titleText.fontSize = 24;
-  titleText.fills = [{ type: 'SOLID', color: { r: 0.2, g: 0.2, b: 0.2 } }];
-  titleText.x = 20;
-  titleText.y = 20;
-  frame.appendChild(titleText);
-
-  // Add fields
-  // For user stories from import, if Description is provided, replace As a/I want/So that with Description
-  let fieldsToShow = template.fields;
-  if (templateType === 'userStory' && customData && customData['Description']) {
-    // Replace As a/I want/So that with Description for imported user stories
-    fieldsToShow = [
-      { label: 'Description', value: customData['Description'] },
-    ].concat(
-      template.fields.filter(
-        (f) =>
-          f.label !== 'As a' && f.label !== 'I want' && f.label !== 'So that'
-      )
-    );
-  }
-
-  let yOffset = 60;
-  for (const field of fieldsToShow) {
-    // Get value from custom data or use default
-    const fieldValue =
-      customData && customData[field.label]
-        ? customData[field.label]
-        : field.value;
-
-    // Field label
-    const labelText = figma.createText();
-    labelText.characters = field.label + ':';
-    labelText.fontSize = 12;
-    labelText.fills = [{ type: 'SOLID', color: { r: 0.4, g: 0.4, b: 0.4 } }];
-    labelText.x = 20;
-    labelText.y = yOffset;
-    frame.appendChild(labelText);
-
-    // Field value
-    const valueText = figma.createText();
-    valueText.characters = fieldValue;
-    valueText.fontSize = 14;
-    valueText.fills = [{ type: 'SOLID', color: { r: 0.1, g: 0.1, b: 0.1 } }];
-    valueText.x = 20;
-    valueText.y = yOffset + 20;
-    valueText.resize(360, valueText.height);
-    frame.appendChild(valueText);
-
-    yOffset += valueText.height + 40;
-  }
-
-  // Resize frame to fit content
-  frame.resize(400, yOffset + 20);
-
-  // Add to current page
-  figma.currentPage.appendChild(frame);
-
-  // Select the new frame
+  // Select the new frame and scroll to it (only for menu button clicks, not imports)
   figma.currentPage.selection = [frame];
   figma.viewport.scrollAndZoomIntoView([frame]);
 
@@ -541,7 +581,7 @@ function mapJiraIssueToTemplate(issue: { [key: string]: string }): {
         Description: description || 'User story description...', // Use Description for imports
         'Acceptance Criteria':
           acceptanceCriteria || '- Criterion 1\n- Criterion 2\n- Criterion 3',
-        'Story Points': storyPoints || '?',
+        'Story Points': storyPoints || '#',
         Priority: priority || 'Medium',
         Assignee: issue['Assignee'] || 'Unassigned',
       },
@@ -568,6 +608,7 @@ function mapJiraIssueToTemplate(issue: { [key: string]: string }): {
         Name: summary, // Name → Summary
         Description: description || 'Task description...', // Description → Description
         Status: status || 'Not Started',
+        'Story Points': storyPoints || '?', // Include Story Points if available
         Assignee: issue['Assignee'] || 'Unassigned',
       },
     };
@@ -581,6 +622,7 @@ function mapJiraIssueToTemplate(issue: { [key: string]: string }): {
         Description: description || 'Spike description...', // Description → Description
         Status: status || 'In Progress',
         Findings: formatJiraText(description || 'Research findings...'), // Use description as findings
+        'Story Points': storyPoints || '?', // Include Story Points if available
         Assignee: issue['Assignee'] || 'Unassigned',
       },
     };
@@ -594,6 +636,7 @@ function mapJiraIssueToTemplate(issue: { [key: string]: string }): {
         Description: description || 'Test description...', // Description → Description
         Status: status || 'Not Started',
         'Test Type': issue['Custom field (Test Type)'] || 'Manual',
+        'Story Points': storyPoints || '?', // Include Story Points if available
         Assignee: issue['Assignee'] || 'Unassigned',
       },
     };
@@ -607,6 +650,8 @@ function mapJiraIssueToTemplate(issue: { [key: string]: string }): {
         Description: description || 'Business objective description...', // Description → Description
         'Business Value': businessValue || 'High',
         Status: status || 'Planning',
+        'Priority Rank':
+          issue['Priority'] || issue['Custom field (Priority Rank)'] || '#',
       },
     };
   } else {
@@ -626,52 +671,106 @@ function mapJiraIssueToTemplate(issue: { [key: string]: string }): {
 }
 
 // Helper function to create card at specific position
+// This is the unified card creation function used by both menu clicks and imports
 async function createTemplateCardWithPosition(
   templateType: keyof typeof TEMPLATES,
-  customData: { [key: string]: string },
-  x: number,
-  y: number
+  customData?: { [key: string]: string },
+  x?: number,
+  y?: number
 ): Promise<FrameNode> {
   const template = TEMPLATES[templateType];
 
   // Ensure fonts are loaded (uses cache if already loaded)
   await ensureFontsLoaded();
 
+  // Use provided position or default to viewport center
+  const viewport = figma.viewport.center;
+  const cardX = x !== undefined ? x : viewport.x;
+  const cardY = y !== undefined ? y : viewport.y;
+
   // Create a frame to hold the template
+  // In FigJam, frames work well for structured cards with multiple elements
   const frame = figma.createFrame();
   frame.name = (customData && customData.title) || template.title;
-  frame.x = x;
-  frame.y = y;
-  frame.resize(400, 300);
-  // Transparent background with slight tint for visibility
-  frame.fills = [{ type: 'SOLID', color: { r: 1, g: 1, b: 1 }, opacity: 0.85 }];
-  frame.strokes = [{ type: 'SOLID', color: { r: 0.8, g: 0.8, b: 0.8 } }];
+  frame.x = cardX;
+  frame.y = cardY;
+  // Larger cards to accommodate prominent number display
+  const cardWidth = 500;
+  frame.resize(cardWidth, 400);
+
+  // Set background color to match icon color with 15% opacity
+  const backgroundColor = getTemplateBackgroundColor(templateType);
+  frame.fills = [{ type: 'SOLID', color: backgroundColor, opacity: 0.15 }];
+
+  // Determine text color based on background brightness (for legibility)
+  // Force black text for test, theme, epic, and spike (even with subtle backgrounds)
+  const forceBlackText =
+    templateType === 'test' ||
+    templateType === 'theme' ||
+    templateType === 'epic' ||
+    templateType === 'spike';
+  const useLightText = forceBlackText
+    ? false
+    : shouldUseLightText(backgroundColor);
+
+  // FigJam-optimized styling: More visible border for whiteboard context
+  if (figma.editorType === 'figjam') {
+    // More prominent border for better visibility on whiteboard
+    frame.strokes = [
+      { type: 'SOLID', color: { r: 0.6, g: 0.6, b: 0.6 }, opacity: 0.8 },
+    ];
+    frame.strokeWeight = 2;
+  } else {
+    // Original styling for Figma
+    frame.strokes = [{ type: 'SOLID', color: { r: 0.8, g: 0.8, b: 0.8 } }];
+  }
   frame.cornerRadius = 8;
+
+  // Make cards easier to select and interact with in FigJam
+  frame.locked = false;
 
   // Add icon shape based on template type (right-justified)
   const iconSize = 32;
-  const iconX = 400 - 20 - iconSize;
+  const iconX = cardWidth - 20 - iconSize;
   const iconY = 20;
   const iconShape = createIconShape(templateType, iconX, iconY);
   frame.appendChild(iconShape);
 
   // Add title text (left side)
+  // Title comes from Summary field in imports (mapped to 'title' in customData)
+  // or uses template title for new cards
   const titleText = figma.createText();
-  titleText.characters = (customData && customData.title) || template.title;
+  const titleContent = (customData && customData.title) || template.title;
+  titleText.characters = wrapTitleText(titleContent, 40); // Wrap at 40 characters
   titleText.fontSize = 24;
-  titleText.fills = [{ type: 'SOLID', color: { r: 0.2, g: 0.2, b: 0.2 } }];
+  // Use appropriate text color based on background brightness
+  titleText.fills = [
+    {
+      type: 'SOLID',
+      color: useLightText ? { r: 1, g: 1, b: 1 } : { r: 0.2, g: 0.2, b: 0.2 },
+    },
+  ];
   titleText.x = 20;
   titleText.y = 20;
+  // Set width to allow wrapping, then calculate actual height
+  titleText.resize(cardWidth - 40, titleText.height); // cardWidth - left padding - right padding
   frame.appendChild(titleText);
 
+  // Calculate title height after wrapping
+  const titleHeight = titleText.height;
+
   // Add fields
-  // For user stories from import, if Description is provided, replace As a/I want/So that with Description
+  // For user stories, always use Description format (consistent between import and menu creation)
+  // Replace As a/I want/So that with Description field
   let fieldsToShow = template.fields;
-  if (templateType === 'userStory' && customData && customData['Description']) {
-    // Replace As a/I want/So that with Description for imported user stories
-    fieldsToShow = [
-      { label: 'Description', value: customData['Description'] },
-    ].concat(
+  if (templateType === 'userStory') {
+    // Always use Description format for user stories
+    const descriptionValue =
+      customData && customData['Description']
+        ? customData['Description']
+        : 'User story description...';
+
+    fieldsToShow = [{ label: 'Description', value: descriptionValue }].concat(
       template.fields.filter(
         (f) =>
           f.label !== 'As a' && f.label !== 'I want' && f.label !== 'So that'
@@ -679,52 +778,158 @@ async function createTemplateCardWithPosition(
     );
   }
 
-  let yOffset = 60;
-  for (const field of fieldsToShow) {
+  // Filter out fields that will be displayed as large numbers or at the bottom (Assignee)
+  const largeNumberField = getLargeNumberField(templateType);
+  const fieldsToDisplay = fieldsToShow.filter(
+    (f) =>
+      (!largeNumberField || f.label !== largeNumberField) &&
+      f.label !== 'Assignee' // Assignee is shown at bottom, not in fields list
+  );
+
+  // Start fields below title with proper spacing
+  let yOffset = 20 + titleHeight + 20; // title y + title height + padding
+  for (const field of fieldsToDisplay) {
     const fieldValue =
       customData && customData[field.label]
         ? customData[field.label]
         : field.value;
 
+    // Field label
     const labelText = figma.createText();
     labelText.characters = field.label + ':';
-    try {
-      labelText.fontName = { family: 'Inter', style: 'Medium' };
-    } catch (e) {
-      // Font might not be available, use default
-      console.warn('Could not set Medium font, using default');
-    }
     labelText.fontSize = 12;
-    labelText.fills = [{ type: 'SOLID', color: { r: 0.4, g: 0.4, b: 0.4 } }];
+    labelText.fills = [
+      {
+        type: 'SOLID',
+        color: useLightText
+          ? { r: 0.9, g: 0.9, b: 0.9 }
+          : { r: 0.4, g: 0.4, b: 0.4 },
+      },
+    ];
     labelText.x = 20;
     labelText.y = yOffset;
     frame.appendChild(labelText);
 
-    // Field value - use auto-resize for proper text wrapping
+    // Field value - wider text area for larger cards
     const valueText = figma.createText();
     valueText.characters = fieldValue;
-    try {
-      valueText.fontName = { family: 'Inter', style: 'Regular' };
-    } catch (e) {
-      // Font might not be available, use default
-      console.warn('Could not set Regular font, using default');
-    }
     valueText.fontSize = 14;
-    valueText.fills = [{ type: 'SOLID', color: { r: 0.1, g: 0.1, b: 0.1 } }];
+    valueText.fills = [
+      {
+        type: 'SOLID',
+        color: useLightText ? { r: 1, g: 1, b: 1 } : { r: 0.1, g: 0.1, b: 0.1 },
+      },
+    ];
     valueText.x = 20;
     valueText.y = yOffset + 20;
-    // Set width first, then enable auto-resize for proper text wrapping
-    valueText.resize(360, 1); // Set width, height will auto-resize
-    valueText.textAutoResize = 'HEIGHT';
+    valueText.resize(460, valueText.height); // Wider for larger card
     frame.appendChild(valueText);
 
-    // Calculate actual height after auto-resize
-    const actualHeight = valueText.height;
-    yOffset += actualHeight + 40;
+    yOffset += valueText.height + 40;
+  }
+
+  // Calculate bottom position for number and assignee
+  const bottomPadding = 20;
+  const bottomY = yOffset + bottomPadding;
+
+  // Get the value for the large number display using helper function
+  // For templates with assignees (userStory, task, spike, test), always show the number
+  let largeNumberValue: string | null = null;
+  if (largeNumberField) {
+    const numberField = template.fields.find(
+      (f) => f.label === largeNumberField
+    );
+    const defaultValue = largeNumberField === 'Priority Rank' ? '#' : '?';
+    largeNumberValue =
+      (customData && customData[largeNumberField]) ||
+      (numberField && numberField.value) ||
+      defaultValue;
+  }
+
+  // Add large number in bottom right corner (if applicable)
+  // Right-justified to the icon position
+  // Always show for templates with assignees (userStory, task, spike, test)
+  if (largeNumberField && largeNumberValue) {
+    const largeNumberText = figma.createText();
+    largeNumberText.characters = largeNumberValue;
+    largeNumberText.fontSize = 24; // Same size as title
+    // Make the number bold
+    try {
+      largeNumberText.fontName = { family: 'Inter', style: 'Bold' };
+    } catch (e) {
+      console.warn('Could not set Bold font for number, using default');
+    }
+    largeNumberText.fills = [
+      {
+        type: 'SOLID',
+        color: useLightText ? { r: 1, g: 1, b: 1 } : { r: 0.2, g: 0.2, b: 0.2 },
+      },
+    ];
+    frame.appendChild(largeNumberText);
+
+    // Position in bottom right, right-aligned to icon (iconX + iconSize)
+    // Icon is at iconX, so number should align to iconX + iconSize (right edge of icon)
+    const iconRightEdge = iconX + iconSize;
+    largeNumberText.x = iconRightEdge - largeNumberText.width;
+    largeNumberText.y = bottomY;
+
+    // Update frame height to accommodate the number
+    yOffset = bottomY + largeNumberText.height + bottomPadding;
+  } else {
+    yOffset += bottomPadding;
+  }
+
+  // Add Assignee in bottom left (if applicable, same size, aligned with number)
+  // For templates with assignees (userStory, task, spike, test), always show assignee
+  if (hasAssigneeField(templateType)) {
+    const assigneeField = template.fields.find((f) => f.label === 'Assignee');
+    const assigneeValue =
+      (customData && customData['Assignee']) ||
+      (assigneeField && assigneeField.value) ||
+      'Unassigned';
+
+    // Always show assignee (now defaults to '[Assignee]' for new cards)
+    if (assigneeValue) {
+      const assigneeText = figma.createText();
+      assigneeText.characters = assigneeValue;
+      assigneeText.fontSize = 24; // Same size as title and number
+      // Make the assignee text bold
+      try {
+        assigneeText.fontName = { family: 'Inter', style: 'Bold' };
+      } catch (e) {
+        console.warn('Could not set Bold font for assignee, using default');
+      }
+      assigneeText.fills = [
+        {
+          type: 'SOLID',
+          color: useLightText
+            ? { r: 1, g: 1, b: 1 }
+            : { r: 0.2, g: 0.2, b: 0.2 },
+        },
+      ];
+      frame.appendChild(assigneeText);
+
+      // Position in bottom left, left-justified
+      // Same Y coordinate as number to ensure they're on the same baseline
+      assigneeText.x = 20; // Left padding
+      assigneeText.y = bottomY; // Same Y as number - aligned on same baseline
+
+      // Update frame height if needed (should be same as number height since same font size)
+      yOffset = Math.max(
+        yOffset,
+        bottomY + assigneeText.height + bottomPadding
+      );
+    }
   }
 
   // Resize frame to fit content (add extra padding at bottom)
-  frame.resize(400, yOffset + 20);
+  frame.resize(cardWidth, yOffset);
+
+  // FigJam-specific enhancements
+  if (figma.editorType === 'figjam') {
+    // Cards are optimized for FigJam whiteboard experience
+    // They're easily selectable, movable, and collaborative
+  }
 
   // Add to current page
   figma.currentPage.appendChild(frame);
@@ -736,7 +941,7 @@ async function createTemplateCardWithPosition(
 async function importCardsFromCSV(csvText: string) {
   console.log(
     'importCardsFromCSV called with csvText length:',
-    csvText?.length || 0
+    (csvText && csvText.length) || 0
   );
 
   if (!csvText || csvText.trim() === '') {
@@ -760,8 +965,8 @@ async function importCardsFromCSV(csvText: string) {
   const viewport = figma.viewport.center;
   let xOffset = 0;
   let yOffset = 0;
-  const cardWidth = 450;
-  const cardHeight = 400;
+  const cardWidth = 500;
+  const cardHeight = 500;
   const spacing = 50;
   const cardsPerRow = 3;
 
@@ -1099,6 +1304,13 @@ figma.ui.onmessage = async (msg: {
     figma.closePlugin();
   }
 };
+
+// Check if running in FigJam (recommended for this plugin)
+if (figma.editorType !== 'figjam') {
+  figma.notify(
+    '⚠️ This plugin is optimized for FigJam. Some features may not work as expected in Figma.'
+  );
+}
 
 // Show the UI panel
 figma.showUI(__html__, {
