@@ -119,33 +119,42 @@ async function createTemplateCard(
   let iconShape: SceneNode;
 
   if (templateType === 'theme') {
-    // Double circle for theme (business objective) - using two ellipses
-    const outerCircle = figma.createEllipse();
-    outerCircle.resize(iconSize, iconSize);
-    outerCircle.fills = [{ type: 'SOLID', color: { r: 0.4, g: 0.2, b: 0.6 } }]; // Dark purple
-    outerCircle.x = iconX;
-    outerCircle.y = 20;
-    iconShape = outerCircle;
-    // Note: We'll add the inner circle after appending
+    // Elongated horizontal rectangle for theme
+    const rect = figma.createRectangle();
+    rect.resize(iconSize * 1.5, iconSize * 0.6);
+    rect.fills = [{ type: 'SOLID', color: { r: 0.4, g: 0.2, b: 0.6 } }]; // Dark purple
+    rect.cornerRadius = 2;
+    rect.x = iconX - iconSize * 0.25; // Center the wider rectangle
+    rect.y = 20 + (iconSize - rect.height) / 2;
+    iconShape = rect;
   } else if (templateType === 'milestone') {
-    // Diamond shape for milestone (using polygon with 4 points)
+    // Diamond shape for milestone (using polygon with 4 points) - Green
     const diamond = figma.createPolygon();
     diamond.resize(iconSize, iconSize);
     diamond.pointCount = 4;
-    diamond.fills = [{ type: 'SOLID', color: { r: 0.85, g: 0.2, b: 0.2 } }]; // Red
+    diamond.fills = [{ type: 'SOLID', color: { r: 0.3, g: 0.7, b: 0.3 } }]; // Green
     diamond.x = iconX;
     diamond.y = 20;
     iconShape = diamond;
   } else if (templateType === 'userStory') {
-    // Circle for user story
+    // Light orange square for user story
+    const rect = figma.createRectangle();
+    rect.resize(iconSize, iconSize);
+    rect.fills = [{ type: 'SOLID', color: { r: 1.0, g: 0.8, b: 0.6 } }]; // Light orange
+    rect.cornerRadius = 4;
+    rect.x = iconX;
+    rect.y = 20;
+    iconShape = rect;
+  } else if (templateType === 'epic') {
+    // Blue circle for epic
     const ellipse = figma.createEllipse();
     ellipse.resize(iconSize, iconSize);
     ellipse.fills = [{ type: 'SOLID', color: { r: 0.2, g: 0.5, b: 0.9 } }]; // Blue
     ellipse.x = iconX;
     ellipse.y = 20;
     iconShape = ellipse;
-  } else if (templateType === 'epic') {
-    // Triangle for epic (using polygon)
+  } else if (templateType === 'initiative') {
+    // Orange triangle for initiative
     const polygon = figma.createPolygon();
     polygon.resize(iconSize, iconSize);
     polygon.pointCount = 3;
@@ -153,42 +162,33 @@ async function createTemplateCard(
     polygon.x = iconX;
     polygon.y = 20;
     iconShape = polygon;
-  } else if (templateType === 'initiative') {
-    // Square for initiative
+  } else if (templateType === 'task') {
+    // Light blue square for task
     const rect = figma.createRectangle();
     rect.resize(iconSize, iconSize);
-    rect.fills = [{ type: 'SOLID', color: { r: 0.3, g: 0.7, b: 0.3 } }]; // Green
+    rect.fills = [{ type: 'SOLID', color: { r: 0.6, g: 0.8, b: 1.0 } }]; // Light blue
     rect.cornerRadius = 4;
     rect.x = iconX;
     rect.y = 20;
     iconShape = rect;
-  } else if (templateType === 'task') {
-    // Hexagon for task (using polygon with 6 points)
-    const hexagon = figma.createPolygon();
-    hexagon.resize(iconSize, iconSize);
-    hexagon.pointCount = 6;
-    hexagon.fills = [{ type: 'SOLID', color: { r: 0.6, g: 0.4, b: 0.8 } }]; // Purple
-    hexagon.x = iconX;
-    hexagon.y = 20;
-    iconShape = hexagon;
   } else if (templateType === 'spike') {
-    // Pentagon for spike (using polygon with 5 points)
-    const pentagon = figma.createPolygon();
-    pentagon.resize(iconSize, iconSize);
-    pentagon.pointCount = 5;
-    pentagon.fills = [{ type: 'SOLID', color: { r: 0.9, g: 0.8, b: 0.2 } }]; // Yellow
-    pentagon.x = iconX;
-    pentagon.y = 20;
-    iconShape = pentagon;
+    // Dark blue square for spike
+    const rect = figma.createRectangle();
+    rect.resize(iconSize, iconSize);
+    rect.fills = [{ type: 'SOLID', color: { r: 0.1, g: 0.2, b: 0.5 } }]; // Dark blue
+    rect.cornerRadius = 4;
+    rect.x = iconX;
+    rect.y = 20;
+    iconShape = rect;
   } else if (templateType === 'test') {
-    // Octagon for test (using polygon with 8 points)
-    const octagon = figma.createPolygon();
-    octagon.resize(iconSize, iconSize);
-    octagon.pointCount = 8;
-    octagon.fills = [{ type: 'SOLID', color: { r: 0.5, g: 0.3, b: 0.9 } }]; // Purple
-    octagon.x = iconX;
-    octagon.y = 20;
-    iconShape = octagon;
+    // Blue diamond for test
+    const diamond = figma.createPolygon();
+    diamond.resize(iconSize, iconSize);
+    diamond.pointCount = 4;
+    diamond.fills = [{ type: 'SOLID', color: { r: 0.2, g: 0.5, b: 0.9 } }]; // Blue
+    diamond.x = iconX;
+    diamond.y = 20;
+    iconShape = diamond;
   } else {
     // Default fallback
     const rect = figma.createRectangle();
@@ -623,68 +623,76 @@ async function createTemplateCardWithPosition(
   let iconShape: SceneNode;
 
   if (templateType === 'theme') {
-    // Double circle for theme (business objective) - using two ellipses
-    const outerCircle = figma.createEllipse();
-    outerCircle.resize(iconSize, iconSize);
-    outerCircle.fills = [{ type: 'SOLID', color: { r: 0.4, g: 0.2, b: 0.6 } }]; // Dark purple
-    outerCircle.x = iconX;
-    outerCircle.y = 20;
-    iconShape = outerCircle;
+    // Elongated horizontal rectangle for theme
+    const rect = figma.createRectangle();
+    rect.resize(iconSize * 1.5, iconSize * 0.6);
+    rect.fills = [{ type: 'SOLID', color: { r: 0.4, g: 0.2, b: 0.6 } }]; // Dark purple
+    rect.cornerRadius = 2;
+    rect.x = iconX - iconSize * 0.25; // Center the wider rectangle
+    rect.y = 20 + (iconSize - rect.height) / 2;
+    iconShape = rect;
   } else if (templateType === 'milestone') {
+    // Diamond shape for milestone (using polygon with 4 points) - Green
     const diamond = figma.createPolygon();
     diamond.resize(iconSize, iconSize);
     diamond.pointCount = 4;
-    diamond.fills = [{ type: 'SOLID', color: { r: 0.85, g: 0.2, b: 0.2 } }];
+    diamond.fills = [{ type: 'SOLID', color: { r: 0.3, g: 0.7, b: 0.3 } }]; // Green
     diamond.x = iconX;
     diamond.y = 20;
     iconShape = diamond;
   } else if (templateType === 'userStory') {
-    const ellipse = figma.createEllipse();
-    ellipse.resize(iconSize, iconSize);
-    ellipse.fills = [{ type: 'SOLID', color: { r: 0.2, g: 0.5, b: 0.9 } }];
-    ellipse.x = iconX;
-    ellipse.y = 20;
-    iconShape = ellipse;
-  } else if (templateType === 'epic') {
-    const polygon = figma.createPolygon();
-    polygon.resize(iconSize, iconSize);
-    polygon.pointCount = 3;
-    polygon.fills = [{ type: 'SOLID', color: { r: 0.9, g: 0.6, b: 0.1 } }];
-    polygon.x = iconX;
-    polygon.y = 20;
-    iconShape = polygon;
-  } else if (templateType === 'initiative') {
+    // Light orange square for user story
     const rect = figma.createRectangle();
     rect.resize(iconSize, iconSize);
-    rect.fills = [{ type: 'SOLID', color: { r: 0.3, g: 0.7, b: 0.3 } }];
+    rect.fills = [{ type: 'SOLID', color: { r: 1.0, g: 0.8, b: 0.6 } }]; // Light orange
     rect.cornerRadius = 4;
     rect.x = iconX;
     rect.y = 20;
     iconShape = rect;
+  } else if (templateType === 'epic') {
+    // Blue circle for epic
+    const ellipse = figma.createEllipse();
+    ellipse.resize(iconSize, iconSize);
+    ellipse.fills = [{ type: 'SOLID', color: { r: 0.2, g: 0.5, b: 0.9 } }]; // Blue
+    ellipse.x = iconX;
+    ellipse.y = 20;
+    iconShape = ellipse;
+  } else if (templateType === 'initiative') {
+    // Orange triangle for initiative
+    const polygon = figma.createPolygon();
+    polygon.resize(iconSize, iconSize);
+    polygon.pointCount = 3;
+    polygon.fills = [{ type: 'SOLID', color: { r: 0.9, g: 0.6, b: 0.1 } }]; // Orange
+    polygon.x = iconX;
+    polygon.y = 20;
+    iconShape = polygon;
   } else if (templateType === 'task') {
-    const hexagon = figma.createPolygon();
-    hexagon.resize(iconSize, iconSize);
-    hexagon.pointCount = 6;
-    hexagon.fills = [{ type: 'SOLID', color: { r: 0.6, g: 0.4, b: 0.8 } }];
-    hexagon.x = iconX;
-    hexagon.y = 20;
-    iconShape = hexagon;
+    // Light blue square for task
+    const rect = figma.createRectangle();
+    rect.resize(iconSize, iconSize);
+    rect.fills = [{ type: 'SOLID', color: { r: 0.6, g: 0.8, b: 1.0 } }]; // Light blue
+    rect.cornerRadius = 4;
+    rect.x = iconX;
+    rect.y = 20;
+    iconShape = rect;
   } else if (templateType === 'spike') {
-    const pentagon = figma.createPolygon();
-    pentagon.resize(iconSize, iconSize);
-    pentagon.pointCount = 5;
-    pentagon.fills = [{ type: 'SOLID', color: { r: 0.9, g: 0.8, b: 0.2 } }];
-    pentagon.x = iconX;
-    pentagon.y = 20;
-    iconShape = pentagon;
+    // Dark blue square for spike
+    const rect = figma.createRectangle();
+    rect.resize(iconSize, iconSize);
+    rect.fills = [{ type: 'SOLID', color: { r: 0.1, g: 0.2, b: 0.5 } }]; // Dark blue
+    rect.cornerRadius = 4;
+    rect.x = iconX;
+    rect.y = 20;
+    iconShape = rect;
   } else if (templateType === 'test') {
-    const octagon = figma.createPolygon();
-    octagon.resize(iconSize, iconSize);
-    octagon.pointCount = 8;
-    octagon.fills = [{ type: 'SOLID', color: { r: 0.5, g: 0.3, b: 0.9 } }];
-    octagon.x = iconX;
-    octagon.y = 20;
-    iconShape = octagon;
+    // Blue diamond for test
+    const diamond = figma.createPolygon();
+    diamond.resize(iconSize, iconSize);
+    diamond.pointCount = 4;
+    diamond.fills = [{ type: 'SOLID', color: { r: 0.2, g: 0.5, b: 0.9 } }]; // Blue
+    diamond.x = iconX;
+    diamond.y = 20;
+    iconShape = diamond;
   } else {
     const rect = figma.createRectangle();
     rect.resize(iconSize, iconSize);
@@ -696,16 +704,6 @@ async function createTemplateCardWithPosition(
   }
 
   frame.appendChild(iconShape);
-
-  // For theme, add an inner circle to create a double circle effect
-  if (templateType === 'theme') {
-    const innerCircle = figma.createEllipse();
-    innerCircle.resize(iconSize * 0.6, iconSize * 0.6);
-    innerCircle.fills = [{ type: 'SOLID', color: { r: 0.6, g: 0.4, b: 0.8 } }]; // Lighter purple
-    innerCircle.x = iconX + (iconSize - innerCircle.width) / 2;
-    innerCircle.y = 20 + (iconSize - innerCircle.height) / 2;
-    frame.appendChild(innerCircle);
-  }
 
   // Add title text (left side)
   const titleText = figma.createText();
