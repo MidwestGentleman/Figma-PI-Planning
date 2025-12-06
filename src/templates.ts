@@ -17,20 +17,17 @@ export const TEMPLATES = {
   theme: {
     title: 'Theme',
     fields: [
-      { label: 'Name', value: 'Theme Name' },
       { label: 'Description', value: 'Business objective description...\n' },
-      { label: 'Business Value', value: 'High' },
       { label: 'Priority Rank', value: '#' },
       {
         label: 'Acceptance Criteria',
-        value: '- Criterion 1\n- Criterion 2\n- Criterion 3',
+        value: '- Criterion 1\n- Criterion 2',
       },
     ],
   },
   milestone: {
     title: 'Milestone',
     fields: [
-      { label: 'Name', value: 'Milestone Name' },
       { label: 'Target Date', value: 'MM/DD/YYYY' },
       { label: 'Description', value: 'Milestone description...\n' },
     ],
@@ -43,7 +40,7 @@ export const TEMPLATES = {
       { label: 'So that', value: '[benefit]' },
       {
         label: 'Acceptance Criteria',
-        value: '- Criterion 1\n- Criterion 2\n- Criterion 3',
+        value: '- Criterion 1\n- Criterion 2',
       },
       { label: 'Story Points', value: '?' },
       { label: 'Assignee', value: 'Unassigned' },
@@ -52,26 +49,23 @@ export const TEMPLATES = {
   epic: {
     title: 'Epic',
     fields: [
-      { label: 'Name', value: 'Epic Name' },
       { label: 'Description', value: 'Epic description...\n' },
-      { label: 'Business Value', value: 'High' },
-      { label: 'Team', value: 'Team Name' },
+      { label: 'Priority Rank', value: '#' },
       {
         label: 'Acceptance Criteria',
-        value: '- Criterion 1\n- Criterion 2\n- Criterion 3',
+        value: '- Criterion 1\n- Criterion 2',
       },
     ],
   },
   initiative: {
     title: 'Initiative',
     fields: [
-      { label: 'Name', value: 'Initiative Name' },
       { label: 'Description', value: 'Initiative description...\n' },
       { label: 'Dependencies', value: 'None' },
       { label: 'Priority Rank', value: '#' },
       {
         label: 'Acceptance Criteria',
-        value: '- Criterion 1\n- Criterion 2\n- Criterion 3',
+        value: '- Criterion 1\n- Criterion 2',
       },
     ],
   },
@@ -82,7 +76,7 @@ export const TEMPLATES = {
       { label: 'Assignee', value: 'Unassigned' },
       {
         label: 'Acceptance Criteria',
-        value: '- Criterion 1\n- Criterion 2\n- Criterion 3',
+        value: '- Criterion 1\n- Criterion 2',
       },
     ],
   },
@@ -93,7 +87,7 @@ export const TEMPLATES = {
       { label: 'Assignee', value: 'Unassigned' },
       {
         label: 'Acceptance Criteria',
-        value: '- Criterion 1\n- Criterion 2\n- Criterion 3',
+        value: '- Criterion 1\n- Criterion 2',
       },
     ],
   },
@@ -107,7 +101,7 @@ export const TEMPLATES = {
       { label: 'Assignee', value: 'Unassigned' },
       {
         label: 'Acceptance Criteria',
-        value: '- Criterion 1\n- Criterion 2\n- Criterion 3',
+        value: '- Criterion 1\n- Criterion 2',
       },
     ],
   },

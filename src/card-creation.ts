@@ -14,6 +14,7 @@ import {
   getTemplateBackgroundColor,
   shouldUseLightText,
   hasAssigneeField,
+  hasStatusField,
   wrapTitleText,
 } from './utils';
 
@@ -102,6 +103,212 @@ function createIconShape(
   }
 
   return iconShape;
+}
+
+/**
+ * Creates a simplified epic label card with only Title, icon, Status, and Priority Rank.
+ * This is used as a continuation label in sprints after the first one.
+ * @param title - The epic title
+ * @param status - The epic status
+ * @param priorityRank - The epic priority rank
+ * @param issueKey - Optional issue key for hyperlink
+ * @param x - X coordinate
+ * @param y - Y coordinate
+ * @param jiraBaseUrl - Optional Jira base URL for hyperlink
+ */
+export async function createEpicLabelCard(
+  title: string,
+  status: string,
+  priorityRank: string,
+  issueKey?: string,
+  x?: number,
+  y?: number,
+  jiraBaseUrl?: string
+): Promise<FrameNode> {
+  validateCoordinate(x, 'x');
+  validateCoordinate(y, 'y');
+
+  await ensureFontsLoaded();
+
+  const viewport = figma.viewport.center;
+  const cardX = x !== undefined ? x : viewport.x;
+  const cardY = y !== undefined ? y : viewport.y;
+
+  const frame = figma.createFrame();
+  frame.name = 'Epic'; // Use same name for consistency
+  frame.x = cardX;
+  frame.y = cardY;
+
+  // Mark this as a label card (not for export)
+  frame.setPluginData('isEpicLabel', 'true');
+  frame.setPluginData('templateType', 'Epic');
+
+  if (issueKey) {
+    frame.setPluginData(
+      'issueKey',
+      sanitizeFieldValue(issueKey, 100)
+    );
+  }
+
+  const cardWidth = CARD_CONFIG.WIDTH;
+  frame.resize(cardWidth, CARD_CONFIG.DEFAULT_HEIGHT);
+
+  const backgroundColor = getTemplateBackgroundColor('epic');
+  frame.fills = [
+    {
+      type: 'SOLID',
+      color: backgroundColor,
+      opacity: CARD_CONFIG.BACKGROUND_OPACITY,
+    },
+  ];
+
+  // Force black text for epic labels (same as epic cards)
+  const useLightText = false;
+
+  if (figma.editorType === 'figjam') {
+    frame.strokes = [
+      {
+        type: 'SOLID',
+        color: {
+          r: COLOR_CONFIG.FIGJAM_BORDER.r,
+          g: COLOR_CONFIG.FIGJAM_BORDER.g,
+          b: COLOR_CONFIG.FIGJAM_BORDER.b,
+        },
+        opacity: COLOR_CONFIG.FIGJAM_BORDER.opacity,
+      },
+    ];
+    frame.strokeWeight = COLOR_CONFIG.BORDER_WEIGHT;
+  } else {
+    frame.strokes = [
+      {
+        type: 'SOLID',
+        color: {
+          r: COLOR_CONFIG.FIGMA_BORDER.r,
+          g: COLOR_CONFIG.FIGMA_BORDER.g,
+          b: COLOR_CONFIG.FIGMA_BORDER.b,
+        },
+      },
+    ];
+  }
+  frame.cornerRadius = CARD_CONFIG.BORDER_RADIUS;
+  frame.locked = false;
+
+  const iconSize = CARD_CONFIG.ICON_SIZE;
+  const iconX = cardWidth - CARD_CONFIG.PADDING - iconSize;
+  const iconY = CARD_CONFIG.PADDING;
+  const iconShape = createIconShape('epic', iconX, iconY);
+  frame.appendChild(iconShape);
+
+  const titleText = figma.createText();
+  const titleContent = sanitizeFieldValue(title);
+  titleText.characters = wrapTitleText(
+    titleContent,
+    CARD_CONFIG.TITLE_WRAP_LENGTH
+  );
+  titleText.fontSize = CARD_CONFIG.TITLE_FONT_SIZE;
+  try {
+    titleText.fontName = { family: 'Inter', style: 'Bold' };
+  } catch (e) {
+    console.warn('Could not set Bold font for title, using default');
+  }
+  titleText.fills = [
+    {
+      type: 'SOLID',
+      color: useLightText ? COLOR_CONFIG.TEXT_LIGHT : COLOR_CONFIG.TEXT_DARK,
+    },
+  ];
+  titleText.x = CARD_CONFIG.PADDING;
+  titleText.y = CARD_CONFIG.PADDING;
+  titleText.resize(cardWidth - CARD_CONFIG.PADDING * 2, titleText.height);
+
+  frame.appendChild(titleText);
+
+  // Set hyperlink after text is added to frame (may be required by Figma API)
+  // Set hyperlink if issue key and Jira URL are provided
+  const epicIssueKey = issueKey;
+  console.log(`Epic label hyperlink check - issueKey: "${epicIssueKey}", jiraBaseUrl: "${jiraBaseUrl}"`);
+  if (epicIssueKey && epicIssueKey.trim() !== '' && jiraBaseUrl && jiraBaseUrl.trim() !== '') {
+    try {
+      // Ensure the base URL doesn't have a trailing slash
+      const baseUrl = jiraBaseUrl.trim().replace(/\/$/, '');
+      const url = `${baseUrl}/browse/${epicIssueKey.trim()}`;
+      console.log(`Setting hyperlink for epic label ${epicIssueKey} with URL: ${url}`);
+      console.log(`Text length: ${titleText.characters.length}`);
+      titleText.setRangeHyperlink(0, titleText.characters.length, {
+        type: 'URL',
+        value: url,
+      });
+      console.log(`Hyperlink set successfully for epic label ${epicIssueKey}`);
+    } catch (e) {
+      console.error('Could not set hyperlink on epic label title:', e);
+      // Don't throw - continue with card creation even if hyperlink fails
+    }
+  } else {
+    if (epicIssueKey && epicIssueKey.trim() !== '') {
+      console.log(`Epic label issue key ${epicIssueKey} found but no valid Jira Base URL provided (jiraBaseUrl: "${jiraBaseUrl}")`);
+    } else if (jiraBaseUrl && jiraBaseUrl.trim() !== '') {
+      console.log(`Jira Base URL provided but no epic label issue key found (issueKey: "${epicIssueKey}")`);
+    }
+  }
+
+  const titleHeight = titleText.height;
+  const bottomPadding = CARD_CONFIG.PADDING;
+  const bottomY = titleHeight + CARD_CONFIG.PADDING + bottomPadding;
+
+  // Add Priority Rank (large number at bottom right)
+  const priorityRankValue = priorityRank || '#';
+  const largeNumberText = figma.createText();
+  largeNumberText.characters = priorityRankValue;
+  largeNumberText.fontSize = CARD_CONFIG.TITLE_FONT_SIZE;
+  try {
+    largeNumberText.fontName = { family: 'Inter', style: 'Bold' };
+  } catch (e) {
+    console.warn('Could not set Bold font for priority rank, using default');
+  }
+  largeNumberText.fills = [
+    {
+      type: 'SOLID',
+      color: useLightText ? COLOR_CONFIG.TEXT_LIGHT : COLOR_CONFIG.TEXT_DARK,
+    },
+  ];
+  frame.appendChild(largeNumberText);
+
+  const iconRightEdge = iconX + iconSize;
+  largeNumberText.x = iconRightEdge - largeNumberText.width;
+  largeNumberText.y = bottomY;
+
+  // Add Status (large text at bottom left)
+  const statusValue = status || 'Open';
+  const statusText = figma.createText();
+  statusText.characters = sanitizeFieldValue(statusValue);
+  statusText.fontSize = CARD_CONFIG.TITLE_FONT_SIZE;
+  try {
+    statusText.fontName = { family: 'Inter', style: 'Bold' };
+  } catch (e) {
+    console.warn('Could not set Bold font for status, using default');
+  }
+  statusText.fills = [
+    {
+      type: 'SOLID',
+      color: useLightText
+        ? COLOR_CONFIG.TEXT_LIGHT
+        : COLOR_CONFIG.TEXT_DARK,
+    },
+  ];
+  frame.appendChild(statusText);
+
+  statusText.x = CARD_CONFIG.PADDING;
+  statusText.y = bottomY;
+
+  const finalHeight = Math.max(
+    bottomY + largeNumberText.height + bottomPadding,
+    bottomY + statusText.height + bottomPadding
+  );
+
+  frame.resize(cardWidth, finalHeight);
+  figma.currentPage.appendChild(frame);
+
+  return frame;
 }
 
 /**
@@ -280,7 +487,8 @@ export async function createTemplateCardWithPosition(
   const fieldsToDisplay = fieldsToShow.filter(
     (f) =>
       (!largeNumberField || f.label !== largeNumberField) &&
-      f.label !== 'Assignee'
+      f.label !== 'Assignee' &&
+      f.label !== 'Status'
   );
 
   let yOffset = CARD_CONFIG.PADDING + titleHeight + CARD_CONFIG.PADDING;
@@ -400,6 +608,39 @@ export async function createTemplateCardWithPosition(
     }
   }
 
+  if (hasStatusField(templateType)) {
+    const statusValue =
+      (customData && customData['Status']) || 'Open';
+
+    if (statusValue) {
+      const statusText = figma.createText();
+      statusText.characters = sanitizeFieldValue(statusValue);
+      statusText.fontSize = CARD_CONFIG.TITLE_FONT_SIZE;
+      try {
+        statusText.fontName = { family: 'Inter', style: 'Bold' };
+      } catch (e) {
+        console.warn('Could not set Bold font for status, using default');
+      }
+      statusText.fills = [
+        {
+          type: 'SOLID',
+          color: useLightText
+            ? COLOR_CONFIG.TEXT_LIGHT
+            : COLOR_CONFIG.TEXT_DARK,
+        },
+      ];
+      frame.appendChild(statusText);
+
+      statusText.x = CARD_CONFIG.PADDING;
+      statusText.y = bottomY;
+
+      yOffset = Math.max(
+        yOffset,
+        bottomY + statusText.height + bottomPadding
+      );
+    }
+  }
+
   frame.resize(cardWidth, yOffset);
   figma.currentPage.appendChild(frame);
 
@@ -422,4 +663,3 @@ export async function createTemplateCard(
 
   return frame;
 }
-

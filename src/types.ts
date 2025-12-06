@@ -45,6 +45,9 @@ export interface CardData {
   title: string;
   fields: Array<{ label: string; value: string }>;
   issueKey?: string;
+  sprint?: string;
+  epicLink?: string;
+  team?: string;
 }
 
 /**

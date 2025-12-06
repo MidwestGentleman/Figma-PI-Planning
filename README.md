@@ -255,6 +255,33 @@ Modify `src/code.tsx`:
 - Ensure card has assignee field (User Story, Task, Spike, Test)
 - Check card layout matches template structure
 
+## Deployment
+
+Ready to publish your plugin to the Figma Community? See the deployment documentation:
+
+- **[Quick Start Deployment](./QUICK_START_DEPLOYMENT.md)** - Get started in minutes
+- **[Complete Deployment Guide](./DEPLOYMENT_GUIDE.md)** - Step-by-step instructions
+- **[Deployment Checklist](./DEPLOYMENT_CHECKLIST.md)** - Ensure nothing is missed
+- **[Asset Preparation Guide](./ASSET_PREPARATION_GUIDE.md)** - Create professional visuals
+- **[Production Notes](./PRODUCTION_NOTES.md)** - Code quality and best practices
+
+### Quick Deployment Steps
+
+1. Enable 2FA on your Figma account (required)
+2. Build plugin: `npm run build`
+3. Create assets (icon, thumbnail)
+4. Publish via Figma Desktop: `Plugins > Manage Plugins > Publish`
+5. Wait 5-10 business days for review
+
+See [QUICK_START_DEPLOYMENT.md](./QUICK_START_DEPLOYMENT.md) for details.
+
+Future Enhancments:
+- Fix the formatting of the backlog items. 
+- Consider only bringing in epic name and having priority the same as theme in the bottom right. 
+- Label columns with Epic in a user story map view.
+
+
+
 ## License
 
 MIT

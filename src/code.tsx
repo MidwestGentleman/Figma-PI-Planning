@@ -8,7 +8,7 @@
  */
 
 // Import organized modules
-import { PluginMessage, UIMessage } from './types';
+import { PluginMessage, UIMessage, CardData } from './types';
 import { TEMPLATES } from './templates';
 import {
   CARD_CONFIG,
@@ -30,6 +30,7 @@ import {
   getTemplateBackgroundColor,
   shouldUseLightText,
   hasAssigneeField,
+  hasStatusField,
   wrapTitleText,
   getErrorMessage,
   yieldToUI,
@@ -37,6 +38,7 @@ import {
 import {
   createTemplateCard,
   createTemplateCardWithPosition,
+  createEpicLabelCard,
 } from './card-creation';
 
 // All constants, types, and utility functions are now imported from organized modules above
@@ -247,6 +249,21 @@ function formatJiraText(text: string): string {
 }
 
 /**
+ * Truncates description to 160 characters, adding "..." if truncated.
+ * Used for Theme, Epic, and Initiative cards to keep them compact.
+ */
+function truncateDescription(
+  description: string,
+  maxLength: number = 160
+): string {
+  if (!description || description.length <= maxLength) {
+    return description;
+  }
+  // Truncate to maxLength - 3 to make room for "..."
+  return description.substring(0, maxLength - 3) + '...';
+}
+
+/**
  * Maps a Jira issue to a template type and extracts relevant data.
  * @returns Template type and data, or null if issue cannot be mapped
  */
@@ -254,10 +271,31 @@ function mapJiraIssueToTemplate(issue: { [key: string]: string }): {
   templateType: keyof typeof TEMPLATES;
   data: { [key: string]: string };
 } | null {
-  const issueType = issue['Issue Type'] || '';
+  // Normalize issue type: trim whitespace and convert to lowercase for comparison
+  const rawIssueType = issue['Issue Type'] || '';
+  const issueType = rawIssueType.trim().toLowerCase();
   const summary = issue['Summary'] || '';
+
+  // Debug logging for initiatives to help diagnose mapping issues
+  if (
+    summary &&
+    (summary.includes('PCEC') ||
+      summary.includes('Adventure Era') ||
+      summary.includes('SEAS CAP'))
+  ) {
+    console.log(
+      `[DEBUG] Mapping issue: "${summary}"`,
+      `Raw Issue Type: "${rawIssueType}"`,
+      `Normalized: "${issueType}"`,
+      `Due Date: "${issue['Due Date'] || ''}"`,
+      `Fix Versions: "${issue['Fix Version/s'] || ''}"`,
+      `All issue keys:`,
+      Object.keys(issue).filter((k) => k.toLowerCase().includes('issue'))
+    );
+  }
   const description = formatJiraText(issue['Description'] || '');
   const priority = issue['Priority'] || '';
+  const status = issue['Status'] || 'Open';
   // Parse and round story points to whole number
   const storyPointsRaw = issue['Custom field (Story Points)'] || '';
   const storyPoints =
@@ -291,27 +329,36 @@ function mapJiraIssueToTemplate(issue: { [key: string]: string }): {
   if (soThatMatch) soThat = soThatMatch[1].trim();
 
   // Map issue type to template
+  // IMPORTANT: Check explicit issue types BEFORE checking dates to avoid
+  // incorrectly mapping Initiatives/Themes with dates to Milestones
+  // Issue type is already normalized to lowercase and trimmed above
   let templateType: keyof typeof TEMPLATES;
 
-  // Map based on mapping: Title = Summary, Name = Summary, Team = Custom field (Studio)
-  if (issueType.toLowerCase() === 'epic') {
+  // Map based on mapping: Title = Summary, Team = Custom field (Studio)
+  // Note: issueType is already normalized to lowercase and trimmed
+  if (issueType === 'epic') {
     templateType = 'epic';
+    // Truncate description for display, but store full description for export
+    const displayDescription = description
+      ? truncateDescription(description)
+      : 'Epic description...';
     return {
       templateType,
       data: {
         title: summary, // Title → Summary
-        Name: summary, // Name → Summary
-        Description: description || 'Epic description...', // Description → Description
-        'Business Value': businessValue || 'High',
-        Team: team || 'Team Name', // Team → Custom field (Studio)
+        Description: displayDescription, // Truncated description for display
+        'Priority Rank':
+          issue['Priority'] || issue['Custom field (Priority Rank)'] || '#',
         'Acceptance Criteria':
-          acceptanceCriteria || '- Criterion 1\n- Criterion 2\n- Criterion 3',
+          acceptanceCriteria || '- Criterion 1\n- Criterion 2',
+        Status: status, // Status field for display at bottom
         issueKey: issueKey, // Store issue key for hyperlink
+        // Note: Full description and Team/Studio are stored in plugin data for export preservation
       },
     };
   } else if (
-    issueType.toLowerCase() === 'story' ||
-    issueType.toLowerCase() === 'user story' ||
+    issueType === 'story' ||
+    issueType === 'user story' ||
     (asA && iWant && soThat)
   ) {
     templateType = 'userStory';
@@ -322,27 +369,14 @@ function mapJiraIssueToTemplate(issue: { [key: string]: string }): {
         title: summary, // Title → Summary
         Description: description || 'User story description...', // Use Description for imports
         'Acceptance Criteria':
-          acceptanceCriteria || '- Criterion 1\n- Criterion 2\n- Criterion 3',
+          acceptanceCriteria || '- Criterion 1\n- Criterion 2',
         'Story Points': storyPoints || '?',
         Priority: priority || 'Medium',
         Assignee: issue['Assignee'] || 'Unassigned',
         issueKey: issueKey, // Store issue key for hyperlink
       },
     };
-  } else if (dueDate || fixVersions) {
-    // Use milestone for items with dates
-    templateType = 'milestone';
-    return {
-      templateType,
-      data: {
-        title: summary, // Title → Summary
-        Name: summary, // Name → Summary
-        'Target Date': dueDate || fixVersions || 'MM/DD/YYYY',
-        Description: description || 'Milestone description...', // Description → Description
-        issueKey: issueKey, // Store issue key for hyperlink
-      },
-    };
-  } else if (issueType.toLowerCase() === 'task') {
+  } else if (issueType === 'task') {
     templateType = 'task';
     return {
       templateType,
@@ -352,11 +386,11 @@ function mapJiraIssueToTemplate(issue: { [key: string]: string }): {
         'Story Points': storyPoints || '?', // Include Story Points if available
         Assignee: issue['Assignee'] || 'Unassigned',
         'Acceptance Criteria':
-          acceptanceCriteria || '- Criterion 1\n- Criterion 2\n- Criterion 3',
+          acceptanceCriteria || '- Criterion 1\n- Criterion 2',
         issueKey: issueKey, // Store issue key for hyperlink
       },
     };
-  } else if (issueType.toLowerCase() === 'spike') {
+  } else if (issueType === 'spike') {
     templateType = 'spike';
     return {
       templateType,
@@ -366,11 +400,11 @@ function mapJiraIssueToTemplate(issue: { [key: string]: string }): {
         'Story Points': storyPoints || '?', // Include Story Points if available
         Assignee: issue['Assignee'] || 'Unassigned',
         'Acceptance Criteria':
-          acceptanceCriteria || '- Criterion 1\n- Criterion 2\n- Criterion 3',
+          acceptanceCriteria || '- Criterion 1\n- Criterion 2',
         issueKey: issueKey, // Store issue key for hyperlink
       },
     };
-  } else if (issueType.toLowerCase() === 'test') {
+  } else if (issueType === 'test') {
     templateType = 'test';
     return {
       templateType,
@@ -381,41 +415,103 @@ function mapJiraIssueToTemplate(issue: { [key: string]: string }): {
         'Story Points': storyPoints || '?', // Include Story Points if available
         Assignee: issue['Assignee'] || 'Unassigned',
         'Acceptance Criteria':
-          acceptanceCriteria || '- Criterion 1\n- Criterion 2\n- Criterion 3',
+          acceptanceCriteria || '- Criterion 1\n- Criterion 2',
         issueKey: issueKey, // Store issue key for hyperlink
       },
     };
-  } else if (issueType.toLowerCase() === 'theme') {
+  } else if (issueType === 'theme') {
     templateType = 'theme';
+    // Truncate description for display, but store full description for export
+    const displayDescription = description
+      ? truncateDescription(description)
+      : 'Business objective description...';
     return {
       templateType,
       data: {
         title: summary, // Title → Summary
-        Name: summary, // Name → Summary
-        Description: description || 'Business objective description...', // Description → Description
-        'Business Value': businessValue || 'High',
+        Description: displayDescription, // Truncated description for display
         'Priority Rank':
           issue['Priority'] || issue['Custom field (Priority Rank)'] || '#',
         'Acceptance Criteria':
-          acceptanceCriteria || '- Criterion 1\n- Criterion 2\n- Criterion 3',
+          acceptanceCriteria || '- Criterion 1\n- Criterion 2',
+        Status: status, // Status field for display at bottom
         issueKey: issueKey, // Store issue key for round-trip export
+        // Note: Full description is stored in plugin data for export preservation
       },
     };
-  } else {
-    // Default to initiative
+  } else if (issueType === 'initiative') {
+    // Initiative must be checked BEFORE date-based milestone detection
+    // to prevent initiatives with dates from being incorrectly mapped to milestones
+    console.log(
+      `[DEBUG] Mapping to Initiative: "${summary}", issueType="${issueType}", raw="${rawIssueType}"`
+    );
     templateType = 'initiative';
+    // Truncate description for display, but store full description for export
+    const displayDescription = description
+      ? truncateDescription(description)
+      : 'Initiative description...';
     return {
       templateType,
       data: {
         title: summary, // Title → Summary
-        Name: summary, // Name → Summary
-        Description: description || 'Initiative description...', // Description → Description
+        Description: displayDescription, // Truncated description for display
         Dependencies: dependencies || 'None',
         'Priority Rank':
           issue['Priority'] || issue['Custom field (Priority Rank)'] || '#',
         'Acceptance Criteria':
-          acceptanceCriteria || '- Criterion 1\n- Criterion 2\n- Criterion 3',
+          acceptanceCriteria || '- Criterion 1\n- Criterion 2',
         issueKey: issueKey, // Store issue key for round-trip export
+        // Note: Full description is stored in plugin data for export preservation
+      },
+    };
+  } else if (issueType === 'milestone') {
+    // Explicit milestone type
+    templateType = 'milestone';
+    return {
+      templateType,
+      data: {
+        title: summary, // Title → Summary
+        'Target Date': dueDate || fixVersions || 'MM/DD/YYYY',
+        Description: description || 'Milestone description...', // Description → Description
+        issueKey: issueKey, // Store issue key for hyperlink
+      },
+    };
+  } else if (dueDate || fixVersions) {
+    // Use milestone for items with dates ONLY if issue type is not explicitly defined
+    // This is a fallback for unknown issue types that have dates
+    console.log(
+      `[DEBUG] Mapping to Milestone (date-based fallback): "${summary}", issueType="${issueType}", raw="${rawIssueType}", dueDate="${dueDate}", fixVersions="${fixVersions}"`
+    );
+    templateType = 'milestone';
+    return {
+      templateType,
+      data: {
+        title: summary, // Title → Summary
+        'Target Date': dueDate || fixVersions || 'MM/DD/YYYY',
+        Description: description || 'Milestone description...', // Description → Description
+        issueKey: issueKey, // Store issue key for hyperlink
+      },
+    };
+  } else {
+    // Default to initiative for unknown issue types without dates
+    templateType = 'initiative';
+    // Truncate description for display, but store full description for export
+    const displayDescription = description
+      ? truncateDescription(description)
+      : 'Initiative description...';
+    return {
+      templateType,
+      data: {
+        title: summary, // Title → Summary
+        Description: displayDescription, // Truncated description for display
+        Dependencies: dependencies || 'None',
+        'Priority Rank':
+          issue['Priority'] || issue['Custom field (Priority Rank)'] || '#',
+        'Acceptance Criteria':
+          acceptanceCriteria || '- Criterion 1\n- Criterion 2',
+        Status: status, // Status field for display at bottom
+        issueKey: issueKey, // Store issue key for round-trip export
+        // Note: Full description is stored in plugin data for export preservation
       },
     };
   }
@@ -665,6 +761,8 @@ async function createCapacityTable(
  * @param columnHeights - Array of column heights
  * @param createdFrames - Array to collect created frames
  * @param spacing - Spacing between cards
+ * @param sprint - Sprint name for this batch of issues
+ * @param epicLink - Epic link value for this batch of issues
  * @returns Object with created count, skipped count, and updated heights
  */
 async function processIssueBatch(
@@ -679,7 +777,9 @@ async function processIssueBatch(
   columnHeights: number[],
   createdFrames: FrameNode[],
   spacing: number,
-  jiraBaseUrl?: string
+  jiraBaseUrl?: string,
+  sprint?: string,
+  epicLink?: string
 ): Promise<{ created: number; skipped: number }> {
   let created = 0;
   let skipped = 0;
@@ -703,13 +803,59 @@ async function processIssueBatch(
         jiraBaseUrl
       );
 
+      // Store sprint and epic link in plugin data for round-trip export
+      // Extract sprint from issue if not provided, or use the sprint parameter
+      const issueSprint = sprint || getSprintValue(issue);
+      if (
+        issueSprint &&
+        issueSprint.trim() !== '' &&
+        issueSprint !== 'Backlog'
+      ) {
+        frame.setPluginData('sprint', issueSprint);
+      }
+
+      // Extract epic link from issue if not provided, or use the epicLink parameter
+      const issueEpicLink =
+        epicLink ||
+        issue['Custom field (Epic Link)'] ||
+        issue['Epic Link'] ||
+        issue['Epic'] ||
+        '';
+      if (issueEpicLink && issueEpicLink.trim() !== '') {
+        frame.setPluginData('epicLink', issueEpicLink.trim());
+      }
+
+      // Store team/studio value in plugin data for round-trip export
+      // Extract team from issue (Custom field (Studio) or Custom field (Team))
+      const issueTeam =
+        issue['Custom field (Studio)'] || issue['Custom field (Team)'] || '';
+      if (issueTeam && issueTeam.trim() !== '') {
+        frame.setPluginData('team', issueTeam.trim());
+      }
+
+      // Store full description in plugin data for Theme, Epic, and Initiative
+      // This preserves the full description for export even though display is truncated
+      if (
+        mapped.templateType === 'theme' ||
+        mapped.templateType === 'epic' ||
+        mapped.templateType === 'initiative'
+      ) {
+        // Get the original description from the issue (before truncation)
+        const originalDescription = issue['Description'] || '';
+        if (originalDescription && originalDescription.trim() !== '') {
+          // Format the description (remove Jira formatting) before storing
+          const formattedDescription = formatJiraText(originalDescription);
+          frame.setPluginData('fullDescription', formattedDescription);
+        }
+      }
+
       // Verify issue key and template type were stored (for debugging)
       const storedIssueKey = frame.getPluginData('issueKey');
       const storedTemplateType = frame.getPluginData('templateType');
       console.log(
         `Created card: ${mapped.data.title || 'Untitled'}, frame.name: ${
           frame.name
-        }, templateType: ${storedTemplateType}, issueKey: ${storedIssueKey}`
+        }, templateType: ${storedTemplateType}, issueKey: ${storedIssueKey}, sprint: ${issueSprint}, epicLink: ${issueEpicLink}`
       );
       if (mapped.data.issueKey && !storedIssueKey) {
         console.warn(
@@ -800,6 +946,47 @@ async function importCardsFromCSV(
     const issuesBySprint = groupIssuesBySprint(issues);
     const sortedSprints = Object.keys(issuesBySprint).sort();
 
+    // Identify epic issues and determine which sprint each epic should appear in
+    // Epic should appear in the first sprint that has tickets linked to it
+    const epicIssues: Array<{ [key: string]: string }> = [];
+    const nonEpicIssues: Array<{ [key: string]: string }> = [];
+
+    for (const issue of issues) {
+      const issueType = (issue['Issue Type'] || '').trim().toLowerCase();
+      if (issueType === 'epic') {
+        epicIssues.push(issue);
+      } else {
+        nonEpicIssues.push(issue);
+      }
+    }
+
+    // Build a map: epic issue key -> first sprint that has tickets for it
+    const epicToFirstSprint: { [epicKey: string]: string } = {};
+
+    for (const epic of epicIssues) {
+      const epicKey = epic['Issue key'] || '';
+      if (!epicKey) continue;
+
+      // Find the first sprint (in sorted order) that has tickets linked to this epic
+      for (const sprint of sortedSprints) {
+        const sprintIssues = issuesBySprint[sprint];
+        const hasLinkedTickets = sprintIssues.some((issue) => {
+          const epicLink =
+            issue['Custom field (Epic Link)'] ||
+            issue['Epic Link'] ||
+            issue['Epic'] ||
+            '';
+          // Match epic link to epic issue key
+          return epicLink.trim() === epicKey.trim();
+        });
+
+        if (hasLinkedTickets) {
+          epicToFirstSprint[epicKey] = sprint;
+          break; // Found first sprint, stop looking
+        }
+      }
+    }
+
     const viewport = figma.viewport.center;
     const cardWidth = CARD_CONFIG.WIDTH;
     const spacing = LAYOUT_CONFIG.CARD_SPACING;
@@ -821,7 +1008,23 @@ async function importCardsFromCSV(
     // Process each sprint
     let sprintXOffset = 0; // X position for the current sprint
     for (const sprint of sortedSprints) {
-      const sprintIssues = issuesBySprint[sprint];
+      let sprintIssues = issuesBySprint[sprint];
+
+      // Filter out epic cards from backlog - they should only appear in their designated sprint
+      if (sprint === 'Backlog') {
+        sprintIssues = sprintIssues.filter((issue) => {
+          const issueType = (issue['Issue Type'] || '').trim().toLowerCase();
+          // If it's an epic, check if it has a designated sprint (epicToFirstSprint)
+          if (issueType === 'epic') {
+            const epicIssueKey = issue['Issue key'] || '';
+            // If this epic has a designated sprint (not backlog), exclude it from backlog
+            if (epicIssueKey && epicToFirstSprint[epicIssueKey]) {
+              return false; // Exclude epic from backlog if it has a designated sprint
+            }
+          }
+          return true; // Keep non-epic issues and epics without a designated sprint
+        });
+      }
 
       // Group issues by Epic Link within this sprint
       const issuesByEpic: { [epicLink: string]: typeof sprintIssues } = {};
@@ -953,21 +1156,148 @@ async function importCardsFromCSV(
       // Process each epic column
       for (let epicIndex = 0; epicIndex < sortedEpics.length; epicIndex++) {
         const epicKey = sortedEpics[epicIndex];
-        const epicIssues = issuesByEpic[epicKey];
+        const epicColumnIssues = issuesByEpic[epicKey];
 
         // Calculate X position for this epic column
         const epicX = viewport.x + sprintXOffset + epicIndex * columnWidth;
 
+        // Check if there's an epic issue that should be placed at the top of this column
+        // Full epic card appears in the first sprint, simplified labels in all sprints with tickets
+        let epicCardToPlace: { [key: string]: string } | null = null;
+        let isFirstSprintForEpic = false;
+        if (epicKey !== 'No Epic') {
+          // Find the epic issue from all epic issues in the CSV
+          // epicKey is the epic link value, which should match the epic's issue key
+          for (const epic of epicIssues) {
+            const epicIssueKey = epic['Issue key'] || '';
+            if (epicIssueKey.trim() === epicKey.trim()) {
+              epicCardToPlace = epic;
+              break;
+            }
+          }
+
+          // Check if this is the first sprint for this epic
+          if (epicCardToPlace) {
+            const epicIssueKey = epicCardToPlace['Issue key'] || '';
+            const firstSprintForEpic = epicToFirstSprint[epicIssueKey];
+            isFirstSprintForEpic = firstSprintForEpic === sprint;
+          }
+        }
+
+        // Place epic card or label at the top of the column (if epic exists and has tickets in this sprint)
+        // Full epic card in first sprint, simplified labels in all sprints with tickets
+        if (epicCardToPlace && epicColumnIssues.length > 0) {
+          try {
+            const epicIssueKey = epicCardToPlace['Issue key'] || '';
+            const epicTitle = epicCardToPlace['Summary'] || 'Epic';
+            const epicStatus = epicCardToPlace['Status'] || 'Open';
+            const epicPriorityRank =
+              epicCardToPlace['Priority'] ||
+              epicCardToPlace['Custom field (Priority Rank)'] ||
+              '#';
+
+            if (isFirstSprintForEpic) {
+              // Place full epic card in the first sprint
+              const mapped = mapJiraIssueToTemplate(epicCardToPlace);
+              if (mapped && mapped.templateType === 'epic') {
+                const y = cardsStartY + epicColumnHeights[epicKey];
+                const frame = await createTemplateCardWithPosition(
+                  mapped.templateType,
+                  mapped.data,
+                  epicX,
+                  y,
+                  jiraBaseUrl
+                );
+
+                // Store sprint and epic link
+                const issueSprint = sprint || getSprintValue(epicCardToPlace);
+                if (
+                  issueSprint &&
+                  issueSprint.trim() !== '' &&
+                  issueSprint !== 'Backlog'
+                ) {
+                  frame.setPluginData('sprint', issueSprint);
+                }
+
+                if (epicIssueKey && epicIssueKey.trim() !== '') {
+                  frame.setPluginData('epicLink', epicIssueKey.trim());
+                }
+
+                // Store team/studio if available
+                const issueTeam =
+                  epicCardToPlace['Custom field (Studio)'] ||
+                  epicCardToPlace['Custom field (Team)'] ||
+                  '';
+                if (issueTeam && issueTeam.trim() !== '') {
+                  frame.setPluginData('team', issueTeam.trim());
+                }
+
+                // Store full description
+                const originalDescription =
+                  epicCardToPlace['Description'] || '';
+                if (originalDescription && originalDescription.trim() !== '') {
+                  const formattedDescription =
+                    formatJiraText(originalDescription);
+                  frame.setPluginData('fullDescription', formattedDescription);
+                }
+
+                createdFrames.push(frame);
+                epicColumnHeights[epicKey] += frame.height + spacing;
+                columnHeights[epicIndex] += frame.height + spacing;
+                totalCreated++;
+                processedCount++;
+              }
+            } else {
+              // Place simplified epic label in subsequent sprints (all sprints with tickets)
+              const y = cardsStartY + epicColumnHeights[epicKey];
+              const labelFrame = await createEpicLabelCard(
+                epicTitle,
+                epicStatus,
+                epicPriorityRank,
+                epicIssueKey,
+                epicX,
+                y,
+                jiraBaseUrl
+              );
+
+              createdFrames.push(labelFrame);
+              epicColumnHeights[epicKey] += labelFrame.height + spacing;
+              columnHeights[epicIndex] += labelFrame.height + spacing;
+              totalCreated++;
+              processedCount++;
+            }
+          } catch (error) {
+            console.error('Error creating epic card/label:', error);
+          }
+        }
+
+        // Filter out the epic issue from the list of issues to process (if it was included)
+        const issuesToProcess = epicColumnIssues.filter(
+          (issue: { [key: string]: string }) => {
+            const issueType = (issue['Issue Type'] || '').trim().toLowerCase();
+            const issueKey = issue['Issue key'] || '';
+            // Exclude the epic issue itself if it matches the epic key
+            if (
+              epicCardToPlace &&
+              issueType === 'epic' &&
+              issueKey.trim() === epicKey.trim()
+            ) {
+              return false; // Skip the epic issue, it's already placed
+            }
+            return true;
+          }
+        );
+
         // Process issues in batches to prevent UI blocking
         for (
           let batchStart = 0;
-          batchStart < epicIssues.length;
+          batchStart < issuesToProcess.length;
           batchStart += BATCH_SIZE
         ) {
           // Show progress feedback
           processedCount += Math.min(
             BATCH_SIZE,
-            epicIssues.length - batchStart
+            issuesToProcess.length - batchStart
           );
           if (
             processedCount % progressInterval === 0 ||
@@ -983,8 +1313,16 @@ async function importCardsFromCSV(
           }
 
           // Process batch
+          // Extract epic link from the first issue in this epic group for storage
+          const firstIssueEpicLink =
+            issuesToProcess.length > 0
+              ? issuesToProcess[0]['Custom field (Epic Link)'] ||
+                issuesToProcess[0]['Epic Link'] ||
+                issuesToProcess[0]['Epic'] ||
+                ''
+              : '';
           const batchResult = await processIssueBatch(
-            epicIssues,
+            issuesToProcess,
             batchStart,
             BATCH_SIZE,
             epicX,
@@ -995,7 +1333,9 @@ async function importCardsFromCSV(
             columnHeights,
             createdFrames,
             spacing,
-            jiraBaseUrl
+            jiraBaseUrl,
+            sprint, // Pass sprint name
+            firstIssueEpicLink || epicKey !== 'No Epic' ? epicKey : undefined // Pass epic link
           );
 
           totalCreated += batchResult.created;
@@ -1056,12 +1396,7 @@ function getTemplateKeyFromDisplayName(
 }
 
 // Function to extract data from a card frame
-function extractCardData(frame: FrameNode): {
-  type: string;
-  title: string;
-  fields: { label: string; value: string }[];
-  issueKey?: string;
-} | null {
+function extractCardData(frame: FrameNode): CardData | null {
   // Check if this is one of our template cards by checking the name or plugin data
   // Use Set for O(1) lookup performance
   const cardTypes = new Set([
@@ -1380,6 +1715,83 @@ function extractCardData(frame: FrameNode): {
     }
   }
 
+  // Extract Status from bottom left (if applicable)
+  // Status is displayed as large text (24px, bold) at the bottom left for Theme, Epic, and Initiative
+  if (templateKey && hasStatusField(templateKey)) {
+    // Get all text nodes except title, sorted by Y (bottom to top), then by X (left to right)
+    const candidateNodes = textNodes
+      .filter((node) => node !== titleNode && node.characters.trim())
+      .sort((a, b) => {
+        // First sort by Y (bottom first)
+        const yDiff = b.y - a.y;
+        if (Math.abs(yDiff) > 10) return yDiff; // Different rows
+        // Same row, sort by X (left first)
+        return a.x - b.x;
+      });
+
+    // Check the bottom 20% of the frame or nodes within last 80px
+    const bottomThreshold = Math.max(frame.height * 0.8, frame.height - 80);
+
+    // Look for the leftmost node at the bottom that doesn't match number pattern
+    let foundStatus = false;
+    for (const node of candidateNodes) {
+      const text = node.characters.trim();
+      if (!text) continue;
+
+      const nodeX = node.x;
+      const nodeY = node.y;
+
+      // Check if it's on the left side (left 70% of card for more lenient matching)
+      const isLeftSide = nodeX < frame.width * 0.7;
+
+      // Check if it's near the bottom
+      const isNearBottom = nodeY >= bottomThreshold;
+
+      // Status should not be a number or special character pattern
+      const isNotNumber = !/^[\d?#]+$/.test(text) && !text.endsWith(':');
+
+      if (isLeftSide && isNearBottom && isNotNumber) {
+        // Found Status - add it to fields
+        fields.push({ label: 'Status', value: text });
+        foundStatus = true;
+        break;
+      }
+    }
+
+    // If not found, fallback logic will handle it below
+  }
+
+  // Ensure Status is always included if the card type should have it
+  // This is critical for export - status must be extracted
+  if (templateKey && hasStatusField(templateKey)) {
+    const hasStatus = fields.some((f) => f.label === 'Status');
+    if (!hasStatus) {
+      // Try to find it in any text node at the bottom left
+      const bottomNodes = textNodes
+        .filter((node) => node !== titleNode && node.characters.trim())
+        .filter(
+          (node) => node.y > frame.height * 0.7 && node.x < frame.width * 0.5
+        )
+        .filter((node) => {
+          const text = node.characters.trim();
+          // Status is usually a word like "Open", "In Progress", etc., not a number
+          return text && !/^[\d?#]+$/.test(text) && !text.endsWith(':');
+        })
+        .sort((a, b) => a.x - b.x); // Leftmost first
+
+      if (bottomNodes.length > 0) {
+        fields.push({
+          label: 'Status',
+          value: bottomNodes[0].characters.trim(),
+        });
+      } else {
+        // Default to Open if we can't find it
+        // This ensures status field is always present for export
+        fields.push({ label: 'Status', value: 'Open' });
+      }
+    }
+  }
+
   const largeNumberFieldForFallback = templateKey
     ? getLargeNumberField(templateKey)
     : null;
@@ -1417,14 +1829,40 @@ function extractCardData(frame: FrameNode): {
     }
   }
 
-  // Return extracted card data with issue key for export
-  // Issue keys are preserved for imported cards to enable round-trip to Jira
-  // Always include issueKey even if empty (for consistency)
+  // Extract sprint, epic link, team, and full description from plugin data (stored during import)
+  const sprint = frame.getPluginData('sprint') || undefined;
+  const epicLink = frame.getPluginData('epicLink') || undefined;
+  const team = frame.getPluginData('team') || undefined;
+  const fullDescription = frame.getPluginData('fullDescription') || undefined;
+
+  // For Theme, Epic, and Initiative cards, replace truncated Description with full description
+  if (
+    fullDescription &&
+    (cardType === 'Theme' || cardType === 'Epic' || cardType === 'Initiative')
+  ) {
+    // Find and replace the Description field with the full description
+    const descriptionIndex = fields.findIndex((f) => f.label === 'Description');
+    if (descriptionIndex !== -1) {
+      fields[descriptionIndex] = {
+        label: 'Description',
+        value: fullDescription,
+      };
+    } else {
+      // If Description field doesn't exist, add it
+      fields.unshift({ label: 'Description', value: fullDescription });
+    }
+  }
+
+  // Return extracted card data with issue key, sprint, epic link, and team for export
+  // These are preserved for imported cards to enable round-trip to Jira
   return {
     type: cardType,
     title: actualTitle, // Include the actual title from text node
     fields,
     issueKey: issueKey || undefined, // Include issue key if available (undefined if empty for cleaner export)
+    sprint: sprint || undefined, // Include sprint if available
+    epicLink: epicLink || undefined, // Include epic link if available
+    team: team || undefined, // Include team/studio if available
   };
 }
 
@@ -1435,7 +1873,6 @@ function mapFieldToCSVColumn(fieldLabel: string, templateType: string): string {
   const mapping: { [key: string]: string } = {
     // Common fields
     Summary: 'Summary',
-    Name: 'Summary', // Name also maps to Summary
     Description: 'Description',
     Priority: 'Priority',
     Assignee: 'Assignee',
@@ -1519,10 +1956,6 @@ function isDefaultValue(value: string, defaultValue: string | null): boolean {
 
   // Check for common default patterns (case-insensitive, with flexible whitespace)
   const defaultPatterns = [
-    /^Theme Name$/i,
-    /^Milestone Name$/i,
-    /^Epic Name$/i,
-    /^Initiative Name$/i,
     /^Task description\.\.\.$/i,
     /^Spike description\.\.\.$/i,
     /^Epic description\.\.\.$/i,
@@ -1650,12 +2083,7 @@ function getCanonicalFieldOrder(): string[] {
  * @param filterNew - If true, only export cards without issue keys (new cards). If false, export all cards.
  */
 function exportCardsToCSV(filterNew: boolean = false): void {
-  const cards: Array<{
-    type: string;
-    title: string;
-    fields: { label: string; value: string }[];
-    issueKey?: string;
-  }> = [];
+  const cards: CardData[] = [];
 
   // Find all frames on the current page that match our template names
   // Use Set for O(1) lookup performance instead of O(n) array.includes()
@@ -1676,6 +2104,12 @@ function exportCardsToCSV(filterNew: boolean = false): void {
   ) as FrameNode[];
 
   const frames = allFrames.filter((frame) => {
+    // Skip epic label cards (they're just visual labels, not for export)
+    const isEpicLabel = frame.getPluginData('isEpicLabel') === 'true';
+    if (isEpicLabel) {
+      return false;
+    }
+
     // Check frame name first (primary method for template-created cards)
     if (templateNames.has(frame.name)) {
       return true;
@@ -1757,6 +2191,12 @@ function exportCardsToCSV(filterNew: boolean = false): void {
 
   // Extract data from each card
   for (const frame of frames) {
+    // Skip epic label cards (they're just visual labels, not for export)
+    const isEpicLabel = frame.getPluginData('isEpicLabel') === 'true';
+    if (isEpicLabel) {
+      continue;
+    }
+
     const cardData = extractCardData(frame);
     if (!cardData) {
       console.warn(
@@ -1880,7 +2320,7 @@ function exportCardsToCSV(filterNew: boolean = false): void {
         return;
       }
 
-      // Handle fields that map to the same CSV column (e.g., Name and Summary both → Summary)
+      // Handle fields that map to the same CSV column
       if (!csvColumnMap.has(csvColumn)) {
         csvColumnMap.set(csvColumn, []);
       }
@@ -1897,6 +2337,24 @@ function exportCardsToCSV(filterNew: boolean = false): void {
     if (card.issueKey && card.issueKey.trim() !== '') {
       allCSVColumns.add('Issue key');
     }
+
+    // Add Sprint column if any card has a sprint value
+    // This preserves sprint information for round-trip export
+    if (card.sprint && card.sprint.trim() !== '') {
+      allCSVColumns.add('Sprint');
+    }
+
+    // Add Epic Link column if any card has an epic link
+    // This preserves epic link information for round-trip export
+    if (card.epicLink && card.epicLink.trim() !== '') {
+      allCSVColumns.add('Custom field (Epic Link)');
+    }
+
+    // Add Team/Studio column if any card has a team value
+    // This preserves team/studio information for round-trip export
+    if (card.team && card.team.trim() !== '') {
+      allCSVColumns.add('Custom field (Studio)');
+    }
   });
 
   // Build ordered list of CSV columns
@@ -1910,6 +2368,17 @@ function exportCardsToCSV(filterNew: boolean = false): void {
     orderedCSVColumns.push('Issue key');
   }
   orderedCSVColumns.push('Issue Type'); // Always include Issue Type
+
+  // Add Sprint, Epic Link, and Team/Studio early in the order (important for round-trip)
+  if (allCSVColumns.has('Sprint')) {
+    orderedCSVColumns.push('Sprint');
+  }
+  if (allCSVColumns.has('Custom field (Epic Link)')) {
+    orderedCSVColumns.push('Custom field (Epic Link)');
+  }
+  if (allCSVColumns.has('Custom field (Studio)')) {
+    orderedCSVColumns.push('Custom field (Studio)');
+  }
 
   // Add remaining columns in a logical order
   const priorityOrder = [
@@ -1959,11 +2428,17 @@ function exportCardsToCSV(filterNew: boolean = false): void {
         value = card.issueKey || '';
       } else if (csvColumn === 'Issue Type') {
         value = mapTemplateTypeToIssueType(card.type);
+      } else if (csvColumn === 'Sprint') {
+        value = card.sprint || '';
+      } else if (csvColumn === 'Custom field (Epic Link)') {
+        value = card.epicLink || '';
+      } else if (csvColumn === 'Custom field (Studio)') {
+        value = card.team || '';
       } else {
         // Find the internal field label(s) for this CSV column
         const internalLabels = csvColumnMap.get(csvColumn);
         if (internalLabels && internalLabels.length > 0) {
-          // If multiple fields map to same column (e.g., Name and Summary), prefer Summary
+          // If multiple fields map to same column, use the first one found
           const preferredLabel = internalLabels.includes('Summary')
             ? 'Summary'
             : internalLabels[0];
@@ -2101,8 +2576,14 @@ async function handleCardDuplication(): Promise<boolean> {
     Array<{ id: string; created: number; frame: FrameNode; isCopy: boolean }>
   >();
 
-  // Collect all cards with issue keys
+  // Collect all cards with issue keys (excluding epic labels)
   allFrames.forEach((frame) => {
+    // Skip epic label cards from duplication detection
+    const isEpicLabel = frame.getPluginData('isEpicLabel') === 'true';
+    if (isEpicLabel) {
+      return;
+    }
+
     const issueKey = frame.getPluginData('issueKey');
     if (issueKey && issueKey.trim() !== '') {
       if (!issueKeyToNodes.has(issueKey)) {
@@ -2126,8 +2607,13 @@ async function handleCardDuplication(): Promise<boolean> {
 
   // Also check for cards marked as copies that might have hyperlinks but no issue key
   // (cards that were copied but issue key was already removed)
+  // Exclude epic labels from this check
   const cardsToCheckForHyperlinks: FrameNode[] = [];
   allFrames.forEach((frame) => {
+    const isEpicLabel = frame.getPluginData('isEpicLabel') === 'true';
+    if (isEpicLabel) {
+      return; // Skip epic labels
+    }
     const isCopy = frame.getPluginData('isCopy');
     if (isCopy === 'true') {
       cardsToCheckForHyperlinks.push(frame);
@@ -2268,6 +2754,8 @@ async function handleCardDuplication(): Promise<boolean> {
                     const index = parent.children.indexOf(titleNode);
                     parent.insertChild(index, newTitleNode);
                     titleNode.remove();
+                    // Update textNodes array to reference the new node instead of the removed one
+                    textNodes[0] = newTitleNode;
                   }
 
                   console.log(
@@ -2283,8 +2771,15 @@ async function handleCardDuplication(): Promise<boolean> {
 
           // Notify user that the card has been marked for export (only if not importing)
           if (!isImporting) {
+            // Get card title from the first text node (which may have been replaced)
+            // Re-find text nodes to ensure we have the current ones
+            const currentTextNodes = duplicateFrame.findAll(
+              (node) => node.type === 'TEXT'
+            ) as TextNode[];
             const cardTitle =
-              textNodes.length > 0 ? textNodes[0].characters.trim() : 'Card';
+              currentTextNodes.length > 0
+                ? currentTextNodes[0].characters.trim()
+                : 'Card';
             figma.notify(
               `📋 Copied card "${cardTitle}" marked for export (no issue key)`
             );
@@ -2405,6 +2900,7 @@ async function handleCardDuplication(): Promise<boolean> {
           }
         }
       } catch (e) {
+        // Log error but don't throw - continue processing other cards
         console.warn('Error removing hyperlink from copied card:', e);
       }
     }

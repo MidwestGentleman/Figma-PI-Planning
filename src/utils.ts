@@ -109,7 +109,11 @@ export function sanitizeFieldValue(
 export function getLargeNumberField(
   templateType: keyof typeof TEMPLATES
 ): string | null {
-  if (templateType === 'theme') {
+  if (
+    templateType === 'theme' ||
+    templateType === 'epic' ||
+    templateType === 'initiative'
+  ) {
     return 'Priority Rank';
   } else if (
     templateType === 'userStory' ||
@@ -169,6 +173,19 @@ export function hasAssigneeField(
     templateType === 'task' ||
     templateType === 'spike' ||
     templateType === 'test'
+  );
+}
+
+/**
+ * Checks if a template type has a Status field.
+ */
+export function hasStatusField(
+  templateType: keyof typeof TEMPLATES
+): boolean {
+  return (
+    templateType === 'theme' ||
+    templateType === 'epic' ||
+    templateType === 'initiative'
   );
 }
 
