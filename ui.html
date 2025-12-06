@@ -135,7 +135,6 @@
         }
 
         .export-button {
-            width: 100%;
             padding: 12px 16px;
             background: #001f3f;
             color: #ffffff;
@@ -145,6 +144,7 @@
             font-weight: 600;
             cursor: pointer;
             transition: all 0.2s ease;
+            flex: 1;
         }
 
         .export-button:hover {
@@ -154,6 +154,35 @@
 
         .export-button:active {
             transform: translateY(0);
+        }
+
+        .export-buttons-container {
+            display: flex;
+            gap: 8px;
+        }
+
+        .jira-url-input {
+            width: 100%;
+            padding: 10px 12px;
+            margin-bottom: 12px;
+            border: 1px solid var(--figma-color-border);
+            border-radius: 6px;
+            font-size: 13px;
+            background: var(--figma-color-bg);
+            color: var(--figma-color-text);
+        }
+
+        .jira-url-input:focus {
+            outline: none;
+            border-color: var(--figma-color-border-selected);
+        }
+
+        .jira-url-label {
+            display: block;
+            font-size: 12px;
+            font-weight: 500;
+            margin-bottom: 6px;
+            color: var(--figma-color-text);
         }
     </style>
 </head>
@@ -248,14 +277,24 @@
     </div>
 
     <div style="margin-top: 20px; padding-top: 20px; border-top: 1px solid var(--figma-color-border);">
+        <label for="jira-url" class="jira-url-label">
+            Jira Base URL
+        </label>
+        <input type="text" id="jira-url" class="jira-url-input" placeholder="https://yourcompany.atlassian.net"
+            value="">
         <label for="csv-upload" class="export-button"
-            style="display: block; text-align: center; cursor: pointer; margin-bottom: 12px;">
-            📤 Import from Jira CSV
+            style="display: block; text-align: center; cursor: pointer; margin-bottom: 12px; width: 100%;">
+            Import from Jira CSV
         </label>
         <input type="file" id="csv-upload" accept=".csv" style="display: none;">
-        <button id="export-btn" class="export-button">
-            📥 Export Cards to CSV
-        </button>
+        <div class="export-buttons-container">
+            <button id="export-new-btn" class="export-button">
+                Export New
+            </button>
+            <button id="export-all-btn" class="export-button">
+                Export All
+            </button>
+        </div>
     </div>
 
     <script>
@@ -272,6 +311,27 @@
             });
         });
 
+        // Load saved Jira URL from plugin storage
+        const jiraUrlInput = document.getElementById('jira-url');
+
+        // Request saved Jira URL from plugin
+        parent.postMessage({
+            pluginMessage: {
+                type: 'get-jira-url'
+            }
+        }, '*');
+
+        // Save Jira URL when it changes
+        jiraUrlInput.addEventListener('input', (event) => {
+            const url = event.target.value.trim();
+            parent.postMessage({
+                pluginMessage: {
+                    type: 'set-jira-url',
+                    jiraBaseUrl: url
+                }
+            }, '*');
+        });
+
         // Handle CSV file upload
         document.getElementById('csv-upload').addEventListener('change', (event) => {
             const file = event.target.files[0];
@@ -284,11 +344,14 @@
             const reader = new FileReader();
             reader.onload = (e) => {
                 const csvText = e.target.result;
+                const jiraBaseUrl = jiraUrlInput.value.trim() || undefined;
                 console.log('File read successfully, length:', csvText.length);
+                console.log('Jira Base URL being sent:', jiraBaseUrl);
                 parent.postMessage({
                     pluginMessage: {
                         type: 'import-csv',
-                        csvText: csvText
+                        csvText: csvText,
+                        jiraBaseUrl: jiraBaseUrl
                     }
                 }, '*');
             };
@@ -299,19 +362,32 @@
             reader.readAsText(file);
         });
 
-        // Handle export button click
-        document.getElementById('export-btn').addEventListener('click', () => {
+        // Handle export new button click (only cards without issue keys)
+        document.getElementById('export-new-btn').addEventListener('click', () => {
             parent.postMessage({
                 pluginMessage: {
-                    type: 'export-csv'
+                    type: 'export-csv',
+                    filterNew: true
                 }
             }, '*');
         });
 
-        // Handle CSV export from plugin
+        // Handle export all button click (all cards)
+        document.getElementById('export-all-btn').addEventListener('click', () => {
+            parent.postMessage({
+                pluginMessage: {
+                    type: 'export-csv',
+                    filterNew: false
+                }
+            }, '*');
+        });
+
+        // Handle messages from plugin
         window.onmessage = (event) => {
             const msg = event.data.pluginMessage;
-            if (msg && msg.type === 'export-csv') {
+            if (!msg) return;
+
+            if (msg.type === 'export-csv') {
                 // Create a blob and download the CSV
                 const blob = new Blob([msg.csv], { type: 'text/csv;charset=utf-8;' });
                 const link = document.createElement('a');
@@ -322,6 +398,11 @@
                 document.body.appendChild(link);
                 link.click();
                 document.body.removeChild(link);
+            } else if (msg.type === 'jira-url-loaded') {
+                // Populate the Jira URL input with saved value
+                if (msg.jiraBaseUrl) {
+                    jiraUrlInput.value = msg.jiraBaseUrl;
+                }
             }
         };
     </script>
