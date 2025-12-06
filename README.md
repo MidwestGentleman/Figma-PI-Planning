@@ -275,10 +275,6 @@ Ready to publish your plugin to the Figma Community? See the deployment document
 
 See [QUICK_START_DEPLOYMENT.md](./QUICK_START_DEPLOYMENT.md) for details.
 
-Future Enhancments:
-- Fix the formatting of the backlog items. 
-- Consider only bringing in epic name and having priority the same as theme in the bottom right. 
-- Label columns with Epic in a user story map view.
 
 
 
