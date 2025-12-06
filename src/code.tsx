@@ -150,8 +150,8 @@ function getTemplateBackgroundColor(templateType: keyof typeof TEMPLATES): {
     userStory: { r: 1.0, g: 0.8, b: 0.6 }, // Light orange
     epic: { r: 0.2, g: 0.5, b: 0.9 }, // Blue
     initiative: { r: 0.9, g: 0.6, b: 0.1 }, // Orange
-    task: { r: 0.6, g: 0.8, b: 1.0 }, // Light blue
-    spike: { r: 0.1, g: 0.2, b: 0.5 }, // Dark blue
+    task: { r: 0.13, g: 0.55, b: 0.13 }, // Forest green
+    spike: { r: 0.7, g: 0.6, b: 0.4 }, // Light brown
     test: { r: 0.2, g: 0.5, b: 0.9 }, // Blue
   };
   return colors[templateType] || { r: 0.5, g: 0.5, b: 0.5 }; // Default gray
@@ -287,19 +287,19 @@ function createIconShape(
     polygon.y = iconY;
     iconShape = polygon;
   } else if (templateType === 'task') {
-    // Light blue square for task
+    // Forest green square for task
     const rect = figma.createRectangle();
     rect.resize(iconSize, iconSize);
-    rect.fills = [{ type: 'SOLID', color: { r: 0.6, g: 0.8, b: 1.0 } }]; // Light blue
+    rect.fills = [{ type: 'SOLID', color: { r: 0.13, g: 0.55, b: 0.13 } }]; // Forest green
     rect.cornerRadius = 4;
     rect.x = iconX;
     rect.y = iconY;
     iconShape = rect;
   } else if (templateType === 'spike') {
-    // Dark blue square for spike
+    // Light brown square for spike
     const rect = figma.createRectangle();
     rect.resize(iconSize, iconSize);
-    rect.fills = [{ type: 'SOLID', color: { r: 0.1, g: 0.2, b: 0.5 } }]; // Dark blue
+    rect.fills = [{ type: 'SOLID', color: { r: 0.7, g: 0.6, b: 0.4 } }]; // Light brown
     rect.cornerRadius = 4;
     rect.x = iconX;
     rect.y = iconY;
@@ -731,12 +731,13 @@ async function createTemplateCardWithPosition(
   frame.fills = [{ type: 'SOLID', color: backgroundColor, opacity: 0.15 }];
 
   // Determine text color based on background brightness (for legibility)
-  // Force black text for test, theme, epic, and spike (even with subtle backgrounds)
+  // Force black text for test, theme, epic, spike, and task (even with subtle backgrounds)
   const forceBlackText =
     templateType === 'test' ||
     templateType === 'theme' ||
     templateType === 'epic' ||
-    templateType === 'spike';
+    templateType === 'spike' ||
+    templateType === 'task';
   const useLightText = forceBlackText
     ? false
     : shouldUseLightText(backgroundColor);
@@ -1059,10 +1060,165 @@ async function importCardsFromCSV(csvText: string) {
   let processedCount = 0;
   const progressInterval = Math.max(1, Math.floor(totalIssues / 10)); // Show progress every 10%
 
+  // Helper function to parse story points (handles "1.0", "3", "?", "#", etc.)
+  function parseStoryPoints(value: string): number {
+    if (!value || value.trim() === '' || value === '?' || value === '#') {
+      return 0;
+    }
+    const parsed = parseFloat(value);
+    return isNaN(parsed) ? 0 : parsed;
+  }
+
+  // Helper function to calculate capacity per assignee for a sprint
+  function calculateCapacity(issues: { [key: string]: string }[]): {
+    [assignee: string]: number;
+  } {
+    const capacity: { [assignee: string]: number } = {};
+    for (const issue of issues) {
+      const assignee = issue['Assignee'] || 'Unassigned';
+      const storyPointsStr = issue['Custom field (Story Points)'] || '';
+      const points = parseStoryPoints(storyPointsStr);
+      capacity[assignee] = (capacity[assignee] || 0) + points;
+    }
+    return capacity;
+  }
+
+  // Helper function to calculate capacity table height
+  function calculateTableHeight(capacity: {
+    [assignee: string]: number;
+  }): number {
+    const rowHeight = 28; // Increased to accommodate larger font
+    const headerSpacing = 10; // Slightly increased spacing
+
+    // Count non-zero assignees
+    const dataRowCount = Object.values(capacity).filter(
+      (points) => points > 0
+    ).length;
+
+    // Height = header row + spacing + data rows
+    return rowHeight + headerSpacing + dataRowCount * rowHeight;
+  }
+
+  // Helper function to create a capacity table
+  async function createCapacityTable(
+    capacity: { [assignee: string]: number },
+    x: number,
+    y: number,
+    width: number
+  ): Promise<{ height: number; nodes: SceneNode[] }> {
+    await ensureFontsLoaded();
+    const nodes: SceneNode[] = [];
+    const rowHeight = 28; // Increased to accommodate larger font
+    const columnSpacing = 20;
+    const headerFontSize = 18; // Increased from 14
+    const dataFontSize = 16; // Increased from 12
+    let currentY = y;
+
+    // Create header row
+    const headerAssignee = figma.createText();
+    headerAssignee.characters = 'Assignee';
+    headerAssignee.fontSize = headerFontSize;
+    try {
+      headerAssignee.fontName = { family: 'Inter', style: 'Bold' };
+    } catch (e) {
+      console.warn('Could not set Bold font for table header, using default');
+    }
+    headerAssignee.fills = [
+      { type: 'SOLID', color: { r: 0, g: 0, b: 0 } }, // Black for better readability
+    ];
+    headerAssignee.x = x;
+    headerAssignee.y = currentY;
+    figma.currentPage.appendChild(headerAssignee);
+    nodes.push(headerAssignee);
+
+    const headerAllocated = figma.createText();
+    headerAllocated.characters = 'Allocated';
+    headerAllocated.fontSize = headerFontSize;
+    try {
+      headerAllocated.fontName = { family: 'Inter', style: 'Bold' };
+    } catch (e) {
+      console.warn('Could not set Bold font for table header, using default');
+    }
+    headerAllocated.fills = [
+      { type: 'SOLID', color: { r: 0, g: 0, b: 0 } }, // Black for better readability
+    ];
+    // Position second column (estimate width of first column as 200px)
+    headerAllocated.x = x + 200 + columnSpacing;
+    headerAllocated.y = currentY;
+    figma.currentPage.appendChild(headerAllocated);
+    nodes.push(headerAllocated);
+
+    currentY += rowHeight + 10; // Add spacing after header (increased)
+
+    // Sort assignees by name for consistent ordering
+    const sortedAssignees = Object.keys(capacity).sort();
+
+    // Create data rows
+    for (const assignee of sortedAssignees) {
+      const points = capacity[assignee];
+      if (points === 0) continue; // Skip assignees with 0 points
+
+      const assigneeText = figma.createText();
+      assigneeText.characters = assignee;
+      assigneeText.fontSize = dataFontSize;
+      assigneeText.fills = [
+        { type: 'SOLID', color: { r: 0, g: 0, b: 0 } }, // Black for better readability
+      ];
+      assigneeText.x = x;
+      assigneeText.y = currentY;
+      figma.currentPage.appendChild(assigneeText);
+      nodes.push(assigneeText);
+
+      const pointsText = figma.createText();
+      pointsText.characters = points.toString();
+      pointsText.fontSize = dataFontSize;
+      pointsText.fills = [{ type: 'SOLID', color: { r: 0, g: 0, b: 0 } }]; // Black for better readability
+      pointsText.x = x + 200 + columnSpacing;
+      pointsText.y = currentY;
+      figma.currentPage.appendChild(pointsText);
+      nodes.push(pointsText);
+
+      currentY += rowHeight;
+    }
+
+    return { height: currentY - y, nodes };
+  }
+
   // Process each sprint
   let sprintXOffset = 0; // X position for the current sprint
   for (const sprint of sortedSprints) {
     const sprintIssues = issuesBySprint[sprint];
+
+    // Calculate capacity per assignee for this sprint
+    const capacity = calculateCapacity(sprintIssues);
+
+    // Fixed position for sprint label (doesn't move based on table size)
+    const sprintLabelWidth = cardsPerColumn * (cardWidth + spacing) - spacing; // Total width of 3 columns
+    const fixedSprintLabelY = viewport.y - 80; // Fixed Y position for sprint label
+    const spacingBetweenTableAndLabel = 20; // Space between table and label
+
+    // Calculate table height first (if table exists) - use helper function
+    let capacityTableHeight = 0;
+    if (Object.keys(capacity).length > 0) {
+      capacityTableHeight = calculateTableHeight(capacity);
+
+      // Create the table at the correct position (growing upward from fixed label position)
+      const tableX = viewport.x + sprintXOffset;
+      const tableY =
+        fixedSprintLabelY - capacityTableHeight - spacingBetweenTableAndLabel;
+
+      const tableResult = await createCapacityTable(
+        capacity,
+        tableX,
+        tableY,
+        sprintLabelWidth
+      );
+
+      // Add all table nodes to createdFrames for scrolling
+      for (const node of tableResult.nodes) {
+        createdFrames.push(node as any);
+      }
+    }
 
     // Create sprint label - large text spanning all 3 columns
     const sprintLabel = figma.createText();
@@ -1075,14 +1231,27 @@ async function importCardsFromCSV(csvText: string) {
     }
     sprintLabel.fills = [{ type: 'SOLID', color: { r: 0.2, g: 0.2, b: 0.2 } }];
 
-    // Position label centered above the sprint's 3 columns
-    const sprintLabelWidth = cardsPerColumn * (cardWidth + spacing) - spacing; // Total width of 3 columns
+    // Position label centered above the sprint's 3 columns (fixed position)
     sprintLabel.x =
       viewport.x + sprintXOffset + (sprintLabelWidth - sprintLabel.width) / 2; // Center the label
-    sprintLabel.y = viewport.y - 80; // Position above the cards with spacing
+    sprintLabel.y = fixedSprintLabelY; // Fixed Y position - never changes
 
     figma.currentPage.appendChild(sprintLabel);
     createdFrames.push(sprintLabel as any); // Add to frames for scrolling
+
+    // Add a line under the sprint title spanning all 3 columns
+    const line = figma.createLine();
+    const lineY = sprintLabel.y + sprintLabel.height + 10; // Position below the label with spacing
+    const lineStartX = viewport.x + sprintXOffset;
+
+    line.x = lineStartX;
+    line.y = lineY;
+    line.resize(sprintLabelWidth, 0); // Horizontal line spanning all 3 columns
+    line.strokes = [{ type: 'SOLID', color: { r: 0.4, g: 0.4, b: 0.4 } }];
+    line.strokeWeight = 2;
+
+    figma.currentPage.appendChild(line);
+    createdFrames.push(line as any); // Add to frames for scrolling
 
     // Track position within this sprint (3 columns)
     const columnHeights = [0, 0, 0]; // Track height of each column
