@@ -430,7 +430,21 @@ function parseCSV(csvText: string): Array<{ [key: string]: string }> {
         if (values.length > 0 && values[0].trim() !== '') {
           const row: { [key: string]: string } = {};
           headers.forEach((header, index) => {
-            row[header] = values[index] || '';
+            const value = values[index] || '';
+            // Handle duplicate column names (like multiple "Sprint" columns)
+            // For duplicate names, coalesce values - use first non-empty value
+            if (header in row) {
+              // Column name already exists, coalesce: keep existing if non-empty, otherwise use new value
+              if (!row[header] || row[header].trim() === '') {
+                if (value && value.trim() !== '') {
+                  row[header] = value;
+                }
+              }
+              // If existing value is non-empty, keep it (don't overwrite)
+            } else {
+              // First occurrence of this column name
+              row[header] = value;
+            }
           });
 
           // Only add if has data
@@ -454,7 +468,21 @@ function parseCSV(csvText: string): Array<{ [key: string]: string }> {
     if (values.length > 0 && values[0].trim() !== '') {
       const row: { [key: string]: string } = {};
       headers.forEach((header, index) => {
-        row[header] = values[index] || '';
+        const value = values[index] || '';
+        // Handle duplicate column names (like multiple "Sprint" columns)
+        // For duplicate names, coalesce values - use first non-empty value
+        if (header in row) {
+          // Column name already exists, coalesce: keep existing if non-empty, otherwise use new value
+          if (!row[header] || row[header].trim() === '') {
+            if (value && value.trim() !== '') {
+              row[header] = value;
+            }
+          }
+          // If existing value is non-empty, keep it (don't overwrite)
+        } else {
+          // First occurrence of this column name
+          row[header] = value;
+        }
       });
 
       const hasData = Object.values(row).some(
@@ -962,71 +990,168 @@ async function importCardsFromCSV(csvText: string) {
   // Load fonts once before processing all cards (performance optimization)
   await ensureFontsLoaded();
 
+  // Helper function to extract Sprint value from issue
+  // CSV may have multiple "Sprint" columns, coalesce them to get the first non-empty value
+  function getSprintValue(issue: { [key: string]: string }): string {
+    // Check all possible Sprint column variations
+    // Since CSV parser may overwrite duplicate column names, check all keys
+    const sprintKeys = Object.keys(issue).filter((key) =>
+      key.toLowerCase().includes('sprint')
+    );
+
+    // Try each Sprint column in order
+    for (const key of sprintKeys) {
+      const value = issue[key];
+      if (value && value.trim() !== '') {
+        // Extract just the sprint name (e.g., "Triton 2025-25" from any format)
+        const trimmed = value.trim();
+        // If it looks like a sprint name (contains numbers or common patterns), use it
+        if (trimmed.length > 0 && trimmed !== '[]') {
+          return trimmed;
+        }
+      }
+    }
+
+    // Also check if the issue object has Sprint data in a different format
+    // Sometimes CSV parsers handle duplicate columns differently
+    const allKeys = Object.keys(issue);
+    for (const key of allKeys) {
+      if (key.toLowerCase().includes('sprint')) {
+        const value = issue[key];
+        if (value && value.trim() !== '' && value.trim() !== '[]') {
+          return value.trim();
+        }
+      }
+    }
+
+    return 'No Sprint'; // Default for issues without sprint
+  }
+
+  // Group issues by Sprint
+  const issuesBySprint: { [sprint: string]: typeof issues } = {};
+  for (const issue of issues) {
+    // Skip if no summary (likely empty/invalid row)
+    if (!issue['Summary'] || issue['Summary'].trim() === '') {
+      continue;
+    }
+
+    const sprint = getSprintValue(issue);
+    if (!issuesBySprint[sprint]) {
+      issuesBySprint[sprint] = [];
+    }
+    issuesBySprint[sprint].push(issue);
+  }
+
+  // Sort sprints for consistent ordering
+  const sortedSprints = Object.keys(issuesBySprint).sort();
+
   const viewport = figma.viewport.center;
-  let xOffset = 0;
-  let yOffset = 0;
   const cardWidth = 500;
   const cardHeight = 500;
   const spacing = 50;
-  const cardsPerRow = 3;
+  const cardsPerColumn = 3; // 3 columns per sprint
+  const sprintSpacing = 100; // Space between sprints
 
   let created = 0;
   let skipped = 0;
   const createdFrames: FrameNode[] = [];
   const totalIssues = issues.length;
+  let processedCount = 0;
   const progressInterval = Math.max(1, Math.floor(totalIssues / 10)); // Show progress every 10%
 
-  // Process each row exactly once
-  for (let i = 0; i < issues.length; i++) {
-    const issue = issues[i];
+  // Process each sprint
+  let sprintXOffset = 0; // X position for the current sprint
+  for (const sprint of sortedSprints) {
+    const sprintIssues = issuesBySprint[sprint];
 
-    // Show progress feedback for large imports
-    if (i % progressInterval === 0 || i === issues.length - 1) {
-      const progress = Math.round(((i + 1) / totalIssues) * 100);
-      figma.notify(`Processing ${i + 1}/${totalIssues} (${progress}%)...`, {
-        timeout: 500,
-      });
-    }
-
-    // Skip if no summary (likely empty/invalid row)
-    if (!issue['Summary'] || issue['Summary'].trim() === '') {
-      skipped++;
-      continue;
-    }
-
-    const mapped = mapJiraIssueToTemplate(issue);
-    if (!mapped) {
-      skipped++;
-      continue;
-    }
-
+    // Create sprint label - large text spanning all 3 columns
+    const sprintLabel = figma.createText();
+    sprintLabel.characters = sprint;
+    sprintLabel.fontSize = 48; // Extra large label
     try {
-      // Position cards in a grid
-      const x = viewport.x + xOffset;
-      const y = viewport.y + yOffset;
+      sprintLabel.fontName = { family: 'Inter', style: 'Bold' };
+    } catch (e) {
+      console.warn('Could not set Bold font for sprint label, using default');
+    }
+    sprintLabel.fills = [{ type: 'SOLID', color: { r: 0.2, g: 0.2, b: 0.2 } }];
 
-      // Create card with custom position
-      const frame = await createTemplateCardWithPosition(
-        mapped.templateType,
-        mapped.data,
-        x,
-        y
-      );
-      createdFrames.push(frame);
+    // Position label centered above the sprint's 3 columns
+    const sprintLabelWidth = cardsPerColumn * (cardWidth + spacing) - spacing; // Total width of 3 columns
+    sprintLabel.x =
+      viewport.x + sprintXOffset + (sprintLabelWidth - sprintLabel.width) / 2; // Center the label
+    sprintLabel.y = viewport.y - 80; // Position above the cards with spacing
 
-      // Update position for next card
-      xOffset += cardWidth + spacing;
-      if (xOffset >= (cardWidth + spacing) * cardsPerRow) {
-        // New row
-        xOffset = 0;
-        yOffset += cardHeight + spacing;
+    figma.currentPage.appendChild(sprintLabel);
+    createdFrames.push(sprintLabel as any); // Add to frames for scrolling
+
+    // Track position within this sprint (3 columns)
+    const columnHeights = [0, 0, 0]; // Track height of each column
+    const columnWidth = cardWidth + spacing;
+
+    for (let i = 0; i < sprintIssues.length; i++) {
+      const issue = sprintIssues[i];
+
+      // Show progress feedback for large imports
+      processedCount++;
+      if (
+        processedCount % progressInterval === 0 ||
+        processedCount === totalIssues
+      ) {
+        const progress = Math.round((processedCount / totalIssues) * 100);
+        figma.notify(
+          `Processing ${processedCount}/${totalIssues} (${progress}%)...`,
+          {
+            timeout: 500,
+          }
+        );
       }
 
-      created++;
-    } catch (error) {
-      skipped++;
-      console.error('Error creating card:', error);
+      const mapped = mapJiraIssueToTemplate(issue);
+      if (!mapped) {
+        skipped++;
+        continue;
+      }
+
+      try {
+        // Determine which column (0, 1, or 2) - find the shortest column
+        // This creates a cascading effect where cards fill columns sequentially
+        let columnIndex = 0;
+        let minHeight = columnHeights[0];
+        for (let col = 1; col < cardsPerColumn; col++) {
+          if (columnHeights[col] < minHeight) {
+            minHeight = columnHeights[col];
+            columnIndex = col;
+          }
+        }
+
+        // Calculate position within this sprint
+        const x = viewport.x + sprintXOffset + columnIndex * columnWidth;
+        const y = viewport.y + columnHeights[columnIndex];
+
+        // Create card with custom position
+        const frame = await createTemplateCardWithPosition(
+          mapped.templateType,
+          mapped.data,
+          x,
+          y
+        );
+        createdFrames.push(frame);
+
+        // Update column height for next card in this column
+        columnHeights[columnIndex] += frame.height + spacing;
+
+        created++;
+      } catch (error) {
+        skipped++;
+        console.error('Error creating card:', error);
+      }
     }
+
+    // Move to next sprint position
+    // Find the maximum height across all columns in this sprint
+    const maxSprintHeight = Math.max(...columnHeights);
+    // Move X position for next sprint (3 columns width + spacing)
+    sprintXOffset += cardsPerColumn * columnWidth + sprintSpacing;
   }
 
   // Scroll to show all created cards
