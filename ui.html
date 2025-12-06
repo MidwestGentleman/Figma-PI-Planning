@@ -63,6 +63,51 @@
             font-weight: 600;
             margin-bottom: 8px;
             color: var(--figma-color-text);
+            display: flex;
+            align-items: center;
+        }
+
+        .shape-icon {
+            display: inline-block;
+            width: 16px;
+            height: 16px;
+            margin-right: 8px;
+            text-align: center;
+            line-height: 16px;
+            font-size: 16px;
+            vertical-align: middle;
+        }
+
+        .theme-icon {
+            color: #663399;
+        }
+
+        .initiative-icon {
+            color: #e69900;
+        }
+
+        .milestone-icon {
+            color: #4daf4d;
+        }
+
+        .epic-icon {
+            color: #3366cc;
+        }
+
+        .userstory-icon {
+            color: #ffcc99;
+        }
+
+        .task-icon {
+            color: #99ccff;
+        }
+
+        .spike-icon {
+            color: #1a3366;
+        }
+
+        .test-icon {
+            color: #3366cc;
         }
 
         .template-description {
@@ -88,8 +133,8 @@
         .export-button {
             width: 100%;
             padding: 12px 16px;
-            background: var(--figma-color-bg-brand);
-            color: var(--figma-color-text-onbrand);
+            background: #001f3f;
+            color: #ffffff;
             border: none;
             border-radius: 6px;
             font-size: 14px;
@@ -99,7 +144,7 @@
         }
 
         .export-button:hover {
-            background: var(--figma-color-bg-brand-hover);
+            background: #003366;
             transform: translateY(-1px);
         }
 
@@ -117,56 +162,81 @@
 
     <div class="template-list">
         <div class="template-card" data-template="theme">
-            <div class="template-title">🎯 Theme</div>
+            <div class="template-title">
+                <span class="shape-icon theme-icon"
+                    style="width: 24px; height: 10px; background: #663399; border-radius: 2px; display: inline-block;"></span>
+                Theme
+            </div>
             <div class="template-description">
                 Business objective and strategic goals
             </div>
         </div>
 
         <div class="template-card" data-template="initiative">
-            <div class="template-title">⚡ Initiative</div>
+            <div class="template-title">
+                <span class="shape-icon initiative-icon">▲</span>
+                Initiative
+            </div>
             <div class="template-description">
                 Value Delivery Grouping
             </div>
         </div>
 
         <div class="template-card" data-template="milestone">
-            <div class="template-title">🎯 Milestone</div>
+            <div class="template-title">
+                <span class="shape-icon milestone-icon">◆</span>
+                Milestone
+            </div>
             <div class="template-description">
-                Track key project milestones with dates and status
+                Track key dates for a PI
             </div>
         </div>
 
         <div class="template-card" data-template="epic">
-            <div class="template-title">🚀 Epic</div>
+            <div class="template-title">
+                <span class="shape-icon epic-icon">●</span>
+                Epic
+            </div>
             <div class="template-description">
-                Large work items that span multiple sprints
+                Large work that spans multiple sprints
             </div>
         </div>
 
         <div class="template-card" data-template="userStory">
-            <div class="template-title">📋 User Story</div>
+            <div class="template-title">
+                <span class="shape-icon userstory-icon">■</span>
+                User Story
+            </div>
             <div class="template-description">
-                Standard user story format with acceptance criteria
+                Standard user story format with A/C
             </div>
         </div>
 
         <div class="template-card" data-template="task">
-            <div class="template-title">✅ Task</div>
+            <div class="template-title">
+                <span class="shape-icon task-icon">■</span>
+                Task
+            </div>
             <div class="template-description">
-                Task tracking with assignee and status
+                Small work that spans a single sprint
             </div>
         </div>
 
         <div class="template-card" data-template="spike">
-            <div class="template-title">🔍 Spike</div>
+            <div class="template-title">
+                <span class="shape-icon spike-icon">■</span>
+                Spike
+            </div>
             <div class="template-description">
                 Research and investigation items
             </div>
         </div>
 
         <div class="template-card" data-template="test">
-            <div class="template-title">🧪 Test</div>
+            <div class="template-title">
+                <span class="shape-icon test-icon">◆</span>
+                Test
+            </div>
             <div class="template-description">
                 Test cases and QA validation
             </div>
