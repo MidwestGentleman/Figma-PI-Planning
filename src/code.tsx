@@ -3,6 +3,15 @@
 
 // Define ticket type templates
 const TEMPLATES = {
+  theme: {
+    title: 'Theme',
+    fields: [
+      { label: 'Name', value: 'Theme Name' },
+      { label: 'Description', value: 'Business objective description...' },
+      { label: 'Business Value', value: 'High' },
+      { label: 'Status', value: 'Planning' },
+    ],
+  },
   milestone: {
     title: 'Milestone',
     fields: [
@@ -24,6 +33,7 @@ const TEMPLATES = {
       },
       { label: 'Story Points', value: '?' },
       { label: 'Priority', value: 'Medium' },
+      { label: 'Assignee', value: 'Unassigned' },
     ],
   },
   epic: {
@@ -35,13 +45,42 @@ const TEMPLATES = {
       { label: 'Status', value: 'Planning' },
     ],
   },
-  feature: {
-    title: 'Feature',
+  initiative: {
+    title: 'Initiative',
     fields: [
-      { label: 'Name', value: 'Feature Name' },
-      { label: 'Description', value: 'Feature description...' },
+      { label: 'Name', value: 'Initiative Name' },
+      { label: 'Description', value: 'Initiative description...' },
       { label: 'Dependencies', value: 'None' },
       { label: 'Team', value: 'Team Name' },
+    ],
+  },
+  task: {
+    title: 'Task',
+    fields: [
+      { label: 'Name', value: 'Task Name' },
+      { label: 'Description', value: 'Task description...' },
+      { label: 'Status', value: 'Not Started' },
+      { label: 'Assignee', value: 'Unassigned' },
+    ],
+  },
+  spike: {
+    title: 'Spike',
+    fields: [
+      { label: 'Name', value: 'Spike Name' },
+      { label: 'Description', value: 'Spike description...' },
+      { label: 'Status', value: 'In Progress' },
+      { label: 'Findings', value: 'Research findings...' },
+      { label: 'Assignee', value: 'Unassigned' },
+    ],
+  },
+  test: {
+    title: 'Test',
+    fields: [
+      { label: 'Name', value: 'Test Name' },
+      { label: 'Description', value: 'Test description...' },
+      { label: 'Status', value: 'Not Started' },
+      { label: 'Test Type', value: 'Manual' },
+      { label: 'Assignee', value: 'Unassigned' },
     ],
   },
 };
@@ -79,7 +118,16 @@ async function createTemplateCard(
   const iconX = 400 - 20 - iconSize; // Right edge minus padding minus icon size
   let iconShape: SceneNode;
 
-  if (templateType === 'milestone') {
+  if (templateType === 'theme') {
+    // Double circle for theme (business objective) - using two ellipses
+    const outerCircle = figma.createEllipse();
+    outerCircle.resize(iconSize, iconSize);
+    outerCircle.fills = [{ type: 'SOLID', color: { r: 0.4, g: 0.2, b: 0.6 } }]; // Dark purple
+    outerCircle.x = iconX;
+    outerCircle.y = 20;
+    iconShape = outerCircle;
+    // Note: We'll add the inner circle after appending
+  } else if (templateType === 'milestone') {
     // Diamond shape for milestone (using polygon with 4 points)
     const diamond = figma.createPolygon();
     diamond.resize(iconSize, iconSize);
@@ -105,11 +153,47 @@ async function createTemplateCard(
     polygon.x = iconX;
     polygon.y = 20;
     iconShape = polygon;
-  } else {
-    // Square for feature
+  } else if (templateType === 'initiative') {
+    // Square for initiative
     const rect = figma.createRectangle();
     rect.resize(iconSize, iconSize);
     rect.fills = [{ type: 'SOLID', color: { r: 0.3, g: 0.7, b: 0.3 } }]; // Green
+    rect.cornerRadius = 4;
+    rect.x = iconX;
+    rect.y = 20;
+    iconShape = rect;
+  } else if (templateType === 'task') {
+    // Hexagon for task (using polygon with 6 points)
+    const hexagon = figma.createPolygon();
+    hexagon.resize(iconSize, iconSize);
+    hexagon.pointCount = 6;
+    hexagon.fills = [{ type: 'SOLID', color: { r: 0.6, g: 0.4, b: 0.8 } }]; // Purple
+    hexagon.x = iconX;
+    hexagon.y = 20;
+    iconShape = hexagon;
+  } else if (templateType === 'spike') {
+    // Pentagon for spike (using polygon with 5 points)
+    const pentagon = figma.createPolygon();
+    pentagon.resize(iconSize, iconSize);
+    pentagon.pointCount = 5;
+    pentagon.fills = [{ type: 'SOLID', color: { r: 0.9, g: 0.8, b: 0.2 } }]; // Yellow
+    pentagon.x = iconX;
+    pentagon.y = 20;
+    iconShape = pentagon;
+  } else if (templateType === 'test') {
+    // Octagon for test (using polygon with 8 points)
+    const octagon = figma.createPolygon();
+    octagon.resize(iconSize, iconSize);
+    octagon.pointCount = 8;
+    octagon.fills = [{ type: 'SOLID', color: { r: 0.5, g: 0.3, b: 0.9 } }]; // Purple
+    octagon.x = iconX;
+    octagon.y = 20;
+    iconShape = octagon;
+  } else {
+    // Default fallback
+    const rect = figma.createRectangle();
+    rect.resize(iconSize, iconSize);
+    rect.fills = [{ type: 'SOLID', color: { r: 0.5, g: 0.5, b: 0.5 } }]; // Gray
     rect.cornerRadius = 4;
     rect.x = iconX;
     rect.y = 20;
@@ -128,8 +212,22 @@ async function createTemplateCard(
   frame.appendChild(titleText);
 
   // Add fields
+  // For user stories from import, if Description is provided, replace As a/I want/So that with Description
+  let fieldsToShow = template.fields;
+  if (templateType === 'userStory' && customData && customData['Description']) {
+    // Replace As a/I want/So that with Description for imported user stories
+    fieldsToShow = [
+      { label: 'Description', value: customData['Description'] },
+    ].concat(
+      template.fields.filter(
+        (f) =>
+          f.label !== 'As a' && f.label !== 'I want' && f.label !== 'So that'
+      )
+    );
+  }
+
   let yOffset = 60;
-  for (const field of template.fields) {
+  for (const field of fieldsToShow) {
     // Get value from custom data or use default
     const fieldValue =
       customData && customData[field.label]
@@ -297,18 +395,65 @@ function parseCSV(csvText: string): Array<{ [key: string]: string }> {
 }
 
 // Function to map Jira issue to template type and extract data
+// Function to convert Jira formatting to more readable plain text
+function formatJiraText(text: string): string {
+  if (!text) return text;
+
+  let formatted = text;
+
+  // Convert Jira links [url|text] to "text (url)" or just "url" if no text
+  // Handle [url|text] format first
+  formatted = formatted.replace(/\[([^\]]+)\|([^\]]+)\]/g, '$2 ($1)');
+  // Then handle simple [url] format
+  formatted = formatted.replace(/\[([^\]]+)\]/g, '$1');
+
+  // Convert Jira bold *text* to bold text (remove asterisks but keep emphasis)
+  // Handle single asterisks for bold
+  formatted = formatted.replace(/\*([^*\n]+)\*/g, '$1');
+  // Handle double asterisks
+  formatted = formatted.replace(/\*\*([^*\n]+)\*\*/g, '$1');
+
+  // Convert Jira headings # text to bold headings
+  formatted = formatted.replace(/^#+\s+(.+)$/gm, '$1');
+
+  // Convert horizontal rules ---- to separator line
+  formatted = formatted.replace(/^----\s*$/gm, '─────────────────────────');
+
+  // Preserve bullet points and indentation
+  // Convert Jira list items to clean bullet points
+  formatted = formatted.replace(/^(\s*)[-*]\s+/gm, '$1• ');
+
+  // Clean up excessive blank lines (more than 2 consecutive)
+  formatted = formatted.replace(/\n{3,}/g, '\n\n');
+
+  // Trim whitespace from each line while preserving structure
+  const lines = formatted.split('\n');
+  const cleanedLines = lines.map((line) => {
+    // Preserve indentation for list items and structured content
+    if (/^\s*[•-]/.test(line) || /^\s*[A-Z][a-z]+:/.test(line)) {
+      return line.trimStart();
+    }
+    return line.trim();
+  });
+  formatted = cleanedLines.join('\n').trim();
+
+  return formatted;
+}
+
 function mapJiraIssueToTemplate(issue: { [key: string]: string }): {
   templateType: keyof typeof TEMPLATES;
   data: { [key: string]: string };
 } | null {
   const issueType = issue['Issue Type'] || '';
   const summary = issue['Summary'] || '';
-  const description = issue['Description'] || '';
+  const description = formatJiraText(issue['Description'] || '');
   const status = issue['Status'] || '';
   const priority = issue['Priority'] || '';
   const storyPoints = issue['Custom field (Story Points)'] || '';
-  const acceptanceCriteria = issue['Custom field (Acceptance Criteria)'] || '';
-  const userStory = issue['Custom field (User Story)'] || '';
+  const acceptanceCriteria = formatJiraText(
+    issue['Custom field (Acceptance Criteria)'] || ''
+  );
+  const userStory = formatJiraText(issue['Custom field (User Story)'] || '');
   const issueKey = issue['Issue key'] || '';
   const team =
     issue['Custom field (Studio)'] || issue['Custom field (Team)'] || '';
@@ -353,17 +498,17 @@ function mapJiraIssueToTemplate(issue: { [key: string]: string }): {
     (asA && iWant && soThat)
   ) {
     templateType = 'userStory';
+    // For imported user stories, use Description instead of As a/I want/So that
     return {
       templateType,
       data: {
         title: summary, // Title → Summary
-        'As a': asA || '[user type]',
-        'I want': iWant || '[feature]',
-        'So that': soThat || '[benefit]',
+        Description: description || 'User story description...', // Use Description for imports
         'Acceptance Criteria':
           acceptanceCriteria || '- Criterion 1\n- Criterion 2\n- Criterion 3',
         'Story Points': storyPoints || '?',
         Priority: priority || 'Medium',
+        Assignee: issue['Assignee'] || 'Unassigned',
       },
     };
   } else if (dueDate || fixVersions) {
@@ -379,15 +524,65 @@ function mapJiraIssueToTemplate(issue: { [key: string]: string }): {
         Description: description || 'Milestone description...', // Description → Description
       },
     };
-  } else {
-    // Default to feature
-    templateType = 'feature';
+  } else if (issueType.toLowerCase() === 'task') {
+    templateType = 'task';
     return {
       templateType,
       data: {
         title: summary, // Title → Summary
         Name: summary, // Name → Summary
-        Description: description || 'Feature description...', // Description → Description
+        Description: description || 'Task description...', // Description → Description
+        Status: status || 'Not Started',
+        Assignee: issue['Assignee'] || 'Unassigned',
+      },
+    };
+  } else if (issueType.toLowerCase() === 'spike') {
+    templateType = 'spike';
+    return {
+      templateType,
+      data: {
+        title: summary, // Title → Summary
+        Name: summary, // Name → Summary
+        Description: description || 'Spike description...', // Description → Description
+        Status: status || 'In Progress',
+        Findings: formatJiraText(description || 'Research findings...'), // Use description as findings
+        Assignee: issue['Assignee'] || 'Unassigned',
+      },
+    };
+  } else if (issueType.toLowerCase() === 'test') {
+    templateType = 'test';
+    return {
+      templateType,
+      data: {
+        title: summary, // Title → Summary
+        Name: summary, // Name → Summary
+        Description: description || 'Test description...', // Description → Description
+        Status: status || 'Not Started',
+        'Test Type': issue['Custom field (Test Type)'] || 'Manual',
+        Assignee: issue['Assignee'] || 'Unassigned',
+      },
+    };
+  } else if (issueType.toLowerCase() === 'theme') {
+    templateType = 'theme';
+    return {
+      templateType,
+      data: {
+        title: summary, // Title → Summary
+        Name: summary, // Name → Summary
+        Description: description || 'Business objective description...', // Description → Description
+        'Business Value': businessValue || 'High',
+        Status: status || 'Planning',
+      },
+    };
+  } else {
+    // Default to initiative
+    templateType = 'initiative';
+    return {
+      templateType,
+      data: {
+        title: summary, // Title → Summary
+        Name: summary, // Name → Summary
+        Description: description || 'Initiative description...', // Description → Description
         Dependencies: dependencies || 'None',
         Team: team || 'Team Name', // Team → Custom field (Studio)
       },
@@ -427,7 +622,15 @@ async function createTemplateCardWithPosition(
   const iconX = 400 - 20 - iconSize;
   let iconShape: SceneNode;
 
-  if (templateType === 'milestone') {
+  if (templateType === 'theme') {
+    // Double circle for theme (business objective) - using two ellipses
+    const outerCircle = figma.createEllipse();
+    outerCircle.resize(iconSize, iconSize);
+    outerCircle.fills = [{ type: 'SOLID', color: { r: 0.4, g: 0.2, b: 0.6 } }]; // Dark purple
+    outerCircle.x = iconX;
+    outerCircle.y = 20;
+    iconShape = outerCircle;
+  } else if (templateType === 'milestone') {
     const diamond = figma.createPolygon();
     diamond.resize(iconSize, iconSize);
     diamond.pointCount = 4;
@@ -450,7 +653,7 @@ async function createTemplateCardWithPosition(
     polygon.x = iconX;
     polygon.y = 20;
     iconShape = polygon;
-  } else {
+  } else if (templateType === 'initiative') {
     const rect = figma.createRectangle();
     rect.resize(iconSize, iconSize);
     rect.fills = [{ type: 'SOLID', color: { r: 0.3, g: 0.7, b: 0.3 } }];
@@ -458,9 +661,51 @@ async function createTemplateCardWithPosition(
     rect.x = iconX;
     rect.y = 20;
     iconShape = rect;
+  } else if (templateType === 'task') {
+    const hexagon = figma.createPolygon();
+    hexagon.resize(iconSize, iconSize);
+    hexagon.pointCount = 6;
+    hexagon.fills = [{ type: 'SOLID', color: { r: 0.6, g: 0.4, b: 0.8 } }];
+    hexagon.x = iconX;
+    hexagon.y = 20;
+    iconShape = hexagon;
+  } else if (templateType === 'spike') {
+    const pentagon = figma.createPolygon();
+    pentagon.resize(iconSize, iconSize);
+    pentagon.pointCount = 5;
+    pentagon.fills = [{ type: 'SOLID', color: { r: 0.9, g: 0.8, b: 0.2 } }];
+    pentagon.x = iconX;
+    pentagon.y = 20;
+    iconShape = pentagon;
+  } else if (templateType === 'test') {
+    const octagon = figma.createPolygon();
+    octagon.resize(iconSize, iconSize);
+    octagon.pointCount = 8;
+    octagon.fills = [{ type: 'SOLID', color: { r: 0.5, g: 0.3, b: 0.9 } }];
+    octagon.x = iconX;
+    octagon.y = 20;
+    iconShape = octagon;
+  } else {
+    const rect = figma.createRectangle();
+    rect.resize(iconSize, iconSize);
+    rect.fills = [{ type: 'SOLID', color: { r: 0.5, g: 0.5, b: 0.5 } }];
+    rect.cornerRadius = 4;
+    rect.x = iconX;
+    rect.y = 20;
+    iconShape = rect;
   }
 
   frame.appendChild(iconShape);
+
+  // For theme, add an inner circle to create a double circle effect
+  if (templateType === 'theme') {
+    const innerCircle = figma.createEllipse();
+    innerCircle.resize(iconSize * 0.6, iconSize * 0.6);
+    innerCircle.fills = [{ type: 'SOLID', color: { r: 0.6, g: 0.4, b: 0.8 } }]; // Lighter purple
+    innerCircle.x = iconX + (iconSize - innerCircle.width) / 2;
+    innerCircle.y = 20 + (iconSize - innerCircle.height) / 2;
+    frame.appendChild(innerCircle);
+  }
 
   // Add title text (left side)
   const titleText = figma.createText();
@@ -472,8 +717,22 @@ async function createTemplateCardWithPosition(
   frame.appendChild(titleText);
 
   // Add fields
+  // For user stories from import, if Description is provided, replace As a/I want/So that with Description
+  let fieldsToShow = template.fields;
+  if (templateType === 'userStory' && customData && customData['Description']) {
+    // Replace As a/I want/So that with Description for imported user stories
+    fieldsToShow = [
+      { label: 'Description', value: customData['Description'] },
+    ].concat(
+      template.fields.filter(
+        (f) =>
+          f.label !== 'As a' && f.label !== 'I want' && f.label !== 'So that'
+      )
+    );
+  }
+
   let yOffset = 60;
-  for (const field of template.fields) {
+  for (const field of fieldsToShow) {
     const fieldValue =
       customData && customData[field.label]
         ? customData[field.label]
@@ -586,6 +845,159 @@ async function importCardsFromCSV(csvText: string) {
   );
 }
 
+// Function to extract data from a card frame
+function extractCardData(frame: FrameNode): {
+  type: string;
+  fields: { label: string; value: string }[];
+} | null {
+  // Check if this is one of our template cards by checking the name
+  const cardTypes = [
+    'Theme',
+    'Initiative',
+    'Milestone',
+    'Epic',
+    'User Story',
+    'Task',
+    'Spike',
+    'Test',
+  ];
+  const cardType = cardTypes.find((type) => frame.name === type);
+  if (!cardType) return null;
+
+  const fields: { label: string; value: string }[] = [];
+
+  // Find all text nodes in the frame
+  const textNodes = frame.findAll((node) => node.type === 'TEXT') as TextNode[];
+
+  // Sort by Y position to get fields in order
+  textNodes.sort((a, b) => a.y - b.y);
+
+  // Skip the first text node (title) and process pairs (label, value)
+  let i = 1; // Skip title
+  while (i < textNodes.length) {
+    const labelNode = textNodes[i];
+    const valueNode = textNodes[i + 1];
+
+    if (labelNode && valueNode) {
+      const label = labelNode.characters.replace(':', '').trim();
+      const value = valueNode.characters.trim();
+      fields.push({ label, value });
+      i += 2; // Move to next pair
+    } else {
+      i++;
+    }
+  }
+
+  return {
+    type: cardType,
+    fields,
+  };
+}
+
+// Function to export cards to CSV
+function exportCardsToCSV() {
+  const cards: Array<{
+    type: string;
+    title: string;
+    fields: { label: string; value: string }[];
+  }> = [];
+
+  // Find all frames on the current page that match our template names
+  const templateNames = [
+    'Theme',
+    'Initiative',
+    'Milestone',
+    'Epic',
+    'User Story',
+    'Task',
+    'Spike',
+    'Test',
+  ];
+  const frames = figma.currentPage.findAll(
+    (node) => node.type === 'FRAME' && templateNames.includes(node.name)
+  ) as FrameNode[];
+
+  // Extract data from each card
+  for (const frame of frames) {
+    const cardData = extractCardData(frame);
+    if (cardData) {
+      // Get title from frame name (which is set to the card title)
+      const title = frame.name;
+
+      // For user stories, concatenate As a/I want/So that into Description
+      if (cardData.type === 'User Story') {
+        const asA = cardData.fields.find((f) => f.label === 'As a');
+        const iWant = cardData.fields.find((f) => f.label === 'I want');
+        const soThat = cardData.fields.find((f) => f.label === 'So that');
+
+        // If we have As a/I want/So that, concatenate them into Description
+        if (asA && iWant && soThat) {
+          const description = `As a ${asA.value}, I want ${iWant.value}, so that ${soThat.value}`;
+          // Remove As a/I want/So that and add Description
+          cardData.fields = cardData.fields.filter(
+            (f) =>
+              f.label !== 'As a' &&
+              f.label !== 'I want' &&
+              f.label !== 'So that'
+          );
+          // Add Description at the beginning
+          cardData.fields.unshift({ label: 'Description', value: description });
+        }
+      }
+
+      cards.push({
+        type: cardData.type,
+        title: title,
+        fields: cardData.fields,
+      });
+    }
+  }
+
+  if (cards.length === 0) {
+    figma.notify('❌ No template cards found on the page');
+    return;
+  }
+
+  // Get all unique field labels across all cards
+  const allFieldLabels = new Set<string>();
+  cards.forEach((card) => {
+    card.fields.forEach((field) => {
+      allFieldLabels.add(field.label);
+    });
+  });
+
+  const fieldLabels = Array.from(allFieldLabels).sort();
+
+  // Generate CSV header
+  const header = ['Type', 'Title'].concat(fieldLabels).join(',');
+  const rows = [header];
+
+  // Generate CSV rows
+  cards.forEach((card) => {
+    const row: string[] = [card.type, card.title.replace(/"/g, '""')];
+
+    fieldLabels.forEach((label) => {
+      const field = card.fields.find((f) => f.label === label);
+      const value = field ? field.value.replace(/"/g, '""') : ''; // Escape quotes
+      row.push(`"${value}"`); // Wrap in quotes for CSV
+    });
+    rows.push(row.join(','));
+  });
+
+  const csvContent = rows.join('\n');
+
+  // Send CSV to UI for download
+  figma.ui.postMessage({
+    type: 'export-csv',
+    csv: csvContent,
+    filename: `pi-planning-export-${
+      new Date().toISOString().split('T')[0]
+    }.csv`,
+  });
+
+  figma.notify(`✅ Exported ${cards.length} card(s) to CSV`);
+}
+
 // Set up message handler once
 figma.ui.onmessage = async (msg: {
   type: string;
@@ -613,6 +1025,10 @@ figma.ui.onmessage = async (msg: {
       return;
     }
     await importCardsFromCSV(msg.csvText);
+  }
+
+  if (msg.type === 'export-csv') {
+    exportCardsToCSV();
   }
 
   if (msg.type === 'close') {
