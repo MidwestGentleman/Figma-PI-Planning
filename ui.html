@@ -84,6 +84,28 @@
             margin-right: 8px;
             vertical-align: middle;
         }
+
+        .export-button {
+            width: 100%;
+            padding: 12px 16px;
+            background: var(--figma-color-bg-brand);
+            color: var(--figma-color-text-onbrand);
+            border: none;
+            border-radius: 6px;
+            font-size: 14px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.2s ease;
+        }
+
+        .export-button:hover {
+            background: var(--figma-color-bg-brand-hover);
+            transform: translateY(-1px);
+        }
+
+        .export-button:active {
+            transform: translateY(0);
+        }
     </style>
 </head>
 
@@ -128,6 +150,17 @@
         </div>
     </div>
 
+    <div style="margin-top: 20px; padding-top: 20px; border-top: 1px solid var(--figma-color-border);">
+        <label for="csv-upload" class="export-button"
+            style="display: block; text-align: center; cursor: pointer; margin-bottom: 12px;">
+            📤 Import from Jira CSV
+        </label>
+        <input type="file" id="csv-upload" accept=".csv" style="display: none;">
+        <button id="export-btn" class="export-button">
+            📥 Export Cards to CSV
+        </button>
+    </div>
+
     <script>
         // Handle template card clicks
         document.querySelectorAll('.template-card').forEach(card => {
@@ -141,6 +174,50 @@
                 }, '*');
             });
         });
+
+        // Handle CSV file upload
+        document.getElementById('csv-upload').addEventListener('change', (event) => {
+            const file = event.target.files[0];
+            if (!file) return;
+
+            const reader = new FileReader();
+            reader.onload = (e) => {
+                const csvText = e.target.result;
+                parent.postMessage({
+                    pluginMessage: {
+                        type: 'import-csv',
+                        csvText: csvText
+                    }
+                }, '*');
+            };
+            reader.readAsText(file);
+        });
+
+        // Handle export button click
+        document.getElementById('export-btn').addEventListener('click', () => {
+            parent.postMessage({
+                pluginMessage: {
+                    type: 'export-csv'
+                }
+            }, '*');
+        });
+
+        // Handle CSV export from plugin
+        window.onmessage = (event) => {
+            const msg = event.data.pluginMessage;
+            if (msg && msg.type === 'export-csv') {
+                // Create a blob and download the CSV
+                const blob = new Blob([msg.csv], { type: 'text/csv;charset=utf-8;' });
+                const link = document.createElement('a');
+                const url = URL.createObjectURL(blob);
+                link.setAttribute('href', url);
+                link.setAttribute('download', msg.filename);
+                link.style.visibility = 'hidden';
+                document.body.appendChild(link);
+                link.click();
+                document.body.removeChild(link);
+            }
+        };
     </script>
 </body>
 
