@@ -8,7 +8,7 @@
  */
 
 // Import organized modules
-import { PluginMessage } from './types';
+import { PluginMessage, UIMessage } from './types';
 import { TEMPLATES } from './templates';
 import {
   CARD_CONFIG,
@@ -398,6 +398,7 @@ function mapJiraIssueToTemplate(issue: { [key: string]: string }): {
           issue['Priority'] || issue['Custom field (Priority Rank)'] || '#',
         'Acceptance Criteria':
           acceptanceCriteria || '- Criterion 1\n- Criterion 2\n- Criterion 3',
+        issueKey: issueKey, // Store issue key for round-trip export
       },
     };
   } else {
@@ -414,6 +415,7 @@ function mapJiraIssueToTemplate(issue: { [key: string]: string }): {
           issue['Priority'] || issue['Custom field (Priority Rank)'] || '#',
         'Acceptance Criteria':
           acceptanceCriteria || '- Criterion 1\n- Criterion 2\n- Criterion 3',
+        issueKey: issueKey, // Store issue key for round-trip export
       },
     };
   }
@@ -676,7 +678,8 @@ async function processIssueBatch(
   columnIndex: number,
   columnHeights: number[],
   createdFrames: FrameNode[],
-  spacing: number
+  spacing: number,
+  jiraBaseUrl?: string
 ): Promise<{ created: number; skipped: number }> {
   let created = 0;
   let skipped = 0;
@@ -696,8 +699,29 @@ async function processIssueBatch(
         mapped.templateType,
         mapped.data,
         epicX,
-        y
+        y,
+        jiraBaseUrl
       );
+
+      // Verify issue key and template type were stored (for debugging)
+      const storedIssueKey = frame.getPluginData('issueKey');
+      const storedTemplateType = frame.getPluginData('templateType');
+      console.log(
+        `Created card: ${mapped.data.title || 'Untitled'}, frame.name: ${
+          frame.name
+        }, templateType: ${storedTemplateType}, issueKey: ${storedIssueKey}`
+      );
+      if (mapped.data.issueKey && !storedIssueKey) {
+        console.warn(
+          `Issue key not stored for card: ${mapped.data.title}, issueKey: ${mapped.data.issueKey}`
+        );
+      }
+      if (!storedTemplateType) {
+        console.warn(
+          `Template type not stored for card: ${mapped.data.title}, frame.name: ${frame.name}`
+        );
+      }
+
       createdFrames.push(frame);
       epicColumnHeights[epicKey] += frame.height + spacing;
       columnHeights[columnIndex] += frame.height + spacing;
@@ -718,13 +742,18 @@ async function processIssueBatch(
  * Groups cards by sprint and epic, and creates capacity tables.
  * Uses batched processing for large imports to prevent UI blocking.
  * @param csvText - The CSV text to import
+ * @param jiraBaseUrl - Optional Jira base URL for creating hyperlinks
  * @throws {Error} If CSV text is invalid or import fails
  */
-async function importCardsFromCSV(csvText: string): Promise<void> {
+async function importCardsFromCSV(
+  csvText: string,
+  jiraBaseUrl?: string
+): Promise<void> {
   console.log(
     'importCardsFromCSV called with csvText length:',
     (csvText && csvText.length) || 0
   );
+  console.log('importCardsFromCSV called with jiraBaseUrl:', jiraBaseUrl);
 
   try {
     validateCSVText(csvText);
@@ -752,245 +781,278 @@ async function importCardsFromCSV(csvText: string): Promise<void> {
     return;
   }
 
-  // Show initial progress
-  figma.notify(`📊 Processing ${issues.length} issues...`, { timeout: 2000 });
+  // Set importing flag to suppress duplicate notifications during import
+  isImporting = true;
 
   try {
-    await ensureFontsLoaded();
-  } catch (error) {
-    const errorMessage = getErrorMessage(error);
-    figma.notify(`❌ Error loading fonts: ${errorMessage}`);
-    console.error('Font loading error:', error);
-    return;
-  }
+    // Show initial progress
+    figma.notify(`📊 Processing ${issues.length} issues...`, { timeout: 2000 });
 
-  const issuesBySprint = groupIssuesBySprint(issues);
-  const sortedSprints = Object.keys(issuesBySprint).sort();
-
-  const viewport = figma.viewport.center;
-  const cardWidth = CARD_CONFIG.WIDTH;
-  const spacing = LAYOUT_CONFIG.CARD_SPACING;
-  const sprintSpacing = LAYOUT_CONFIG.SPRINT_SPACING;
-
-  let totalCreated = 0;
-  let totalSkipped = 0;
-  const createdFrames: FrameNode[] = [];
-  const totalIssues = issues.length;
-  let processedCount = 0;
-  const progressInterval = Math.max(
-    1,
-    Math.floor(totalIssues / TIMING_CONFIG.PROGRESS_UPDATE_PERCENTAGE)
-  );
-
-  // Batch size for processing - process 10 cards at a time, then yield
-  const BATCH_SIZE = 10;
-
-  // Process each sprint
-  let sprintXOffset = 0; // X position for the current sprint
-  for (const sprint of sortedSprints) {
-    const sprintIssues = issuesBySprint[sprint];
-
-    // Group issues by Epic Link within this sprint
-    const issuesByEpic: { [epicLink: string]: typeof sprintIssues } = {};
-    for (const issue of sprintIssues) {
-      // Get Epic Link - check various possible field names
-      const epicLink =
-        issue['Custom field (Epic Link)'] ||
-        issue['Epic Link'] ||
-        issue['Epic'] ||
-        '';
-      const epicKey = epicLink.trim() || 'No Epic'; // Use "No Epic" for items without an epic
-
-      if (!issuesByEpic[epicKey]) {
-        issuesByEpic[epicKey] = [];
-      }
-      issuesByEpic[epicKey].push(issue);
-    }
-
-    // Get sorted list of epics (for consistent ordering)
-    const sortedEpics = Object.keys(issuesByEpic).sort();
-    const numEpics = sortedEpics.length;
-    const numColumns = Math.max(numEpics, 3); // Minimum 3 columns, but can have more if more epics
-
-    // Calculate capacity per assignee for this sprint
-    const capacity = calculateCapacity(sprintIssues);
-
-    // Calculate sprint label width based on number of epic columns
-    const columnWidth = cardWidth + spacing;
-    const sprintLabelWidth = numColumns * columnWidth - spacing; // Total width of all epic columns
-    const fixedSprintLabelY = viewport.y + LAYOUT_CONFIG.SPRINT_LABEL_Y_OFFSET; // Fixed Y position for sprint label
-    const spacingBetweenTableAndLabel = LAYOUT_CONFIG.SPRINT_TABLE_SPACING;
-
-    // Calculate table height first (if table exists) - use helper function
-    let capacityTableHeight = 0;
-    if (Object.keys(capacity).length > 0) {
-      capacityTableHeight = calculateTableHeight(capacity);
-
-      // Create the table at the correct position (growing upward from fixed label position)
-      const tableX = viewport.x + sprintXOffset;
-      const tableY =
-        fixedSprintLabelY - capacityTableHeight - spacingBetweenTableAndLabel;
-
-      const tableResult = await createCapacityTable(
-        capacity,
-        tableX,
-        tableY,
-        sprintLabelWidth
-      );
-
-      // Add all table nodes to createdFrames for scrolling
-      for (const node of tableResult.nodes) {
-        createdFrames.push(node as any);
-      }
-    }
-
-    // Create sprint label - large text spanning all epic columns
-    const sprintLabel = figma.createText();
-    sprintLabel.characters = sprint;
-    sprintLabel.fontSize = LAYOUT_CONFIG.SPRINT_LABEL_FONT_SIZE;
     try {
-      sprintLabel.fontName = { family: 'Inter', style: 'Bold' };
-    } catch (e) {
-      console.warn('Could not set Bold font for sprint label, using default');
+      await ensureFontsLoaded();
+    } catch (error) {
+      const errorMessage = getErrorMessage(error);
+      figma.notify(`❌ Error loading fonts: ${errorMessage}`);
+      console.error('Font loading error:', error);
+      return;
     }
-    sprintLabel.fills = [{ type: 'SOLID', color: COLOR_CONFIG.TEXT_DARK }];
 
-    // Position label centered above all epic columns
-    sprintLabel.x =
-      viewport.x + sprintXOffset + (sprintLabelWidth - sprintLabel.width) / 2; // Center the label
-    sprintLabel.y = fixedSprintLabelY; // Fixed Y position - never changes
+    const issuesBySprint = groupIssuesBySprint(issues);
+    const sortedSprints = Object.keys(issuesBySprint).sort();
 
-    figma.currentPage.appendChild(sprintLabel);
-    createdFrames.push(sprintLabel as any); // Add to frames for scrolling
+    const viewport = figma.viewport.center;
+    const cardWidth = CARD_CONFIG.WIDTH;
+    const spacing = LAYOUT_CONFIG.CARD_SPACING;
+    const sprintSpacing = LAYOUT_CONFIG.SPRINT_SPACING;
 
-    // Get sprint dates from the first issue in this sprint (if available)
-    const sprintDates =
-      sprintIssues.length > 0
-        ? getSprintDates(sprintIssues[0])
-        : 'MM/DD/YYYY - MM/DD/YYYY';
+    let totalCreated = 0;
+    let totalSkipped = 0;
+    const createdFrames: FrameNode[] = [];
+    const totalIssues = issues.length;
+    let processedCount = 0;
+    const progressInterval = Math.max(
+      1,
+      Math.floor(totalIssues / TIMING_CONFIG.PROGRESS_UPDATE_PERCENTAGE)
+    );
 
-    // Create sprint dates text - smaller font, positioned under the sprint label
-    const sprintDatesText = figma.createText();
-    sprintDatesText.characters = sprintDates;
-    sprintDatesText.fontSize = LAYOUT_CONFIG.SPRINT_DATES_FONT_SIZE;
-    sprintDatesText.fills = [
-      { type: 'SOLID', color: COLOR_CONFIG.TEXT_SECONDARY },
-    ];
+    // Batch size for processing - process 10 cards at a time, then yield
+    const BATCH_SIZE = 10;
 
-    // Position dates centered under the sprint label
-    sprintDatesText.x =
-      viewport.x +
-      sprintXOffset +
-      (sprintLabelWidth - sprintDatesText.width) / 2; // Center the dates
-    sprintDatesText.y = sprintLabel.y + sprintLabel.height + 5; // Position below label with small spacing
+    // Process each sprint
+    let sprintXOffset = 0; // X position for the current sprint
+    for (const sprint of sortedSprints) {
+      const sprintIssues = issuesBySprint[sprint];
 
-    figma.currentPage.appendChild(sprintDatesText);
-    createdFrames.push(sprintDatesText as any); // Add to frames for scrolling
+      // Group issues by Epic Link within this sprint
+      const issuesByEpic: { [epicLink: string]: typeof sprintIssues } = {};
+      for (const issue of sprintIssues) {
+        // Get Epic Link - check various possible field names
+        const epicLink =
+          issue['Custom field (Epic Link)'] ||
+          issue['Epic Link'] ||
+          issue['Epic'] ||
+          '';
+        const epicKey = epicLink.trim() || 'No Epic'; // Use "No Epic" for items without an epic
 
-    // Add a line under the sprint dates spanning all epic columns
-    const line = figma.createLine();
-    const lineY =
-      sprintDatesText.y +
-      sprintDatesText.height +
-      LAYOUT_CONFIG.SPRINT_LINE_SPACING;
-    const lineStartX = viewport.x + sprintXOffset;
-
-    line.x = lineStartX;
-    line.y = lineY;
-    line.resize(sprintLabelWidth, 0); // Horizontal line spanning all epic columns
-    line.strokes = [{ type: 'SOLID', color: COLOR_CONFIG.TEXT_SECONDARY }];
-    line.strokeWeight = COLOR_CONFIG.BORDER_WEIGHT;
-
-    figma.currentPage.appendChild(line);
-    createdFrames.push(line as any); // Add to frames for scrolling
-
-    // Calculate starting Y position for cards (after the line with spacing)
-    const spacingAfterLine = LAYOUT_CONFIG.SPRINT_AFTER_LINE_SPACING;
-    const cardsStartY = lineY + spacingAfterLine;
-
-    // Track position for each column (epic columns + any empty columns to reach minimum of 3)
-    const epicColumnHeights: { [epicKey: string]: number } = {};
-    for (const epicKey of sortedEpics) {
-      epicColumnHeights[epicKey] = 0;
-    }
-    // Initialize heights for all columns (including empty ones if needed)
-    const columnHeights: number[] = new Array(numColumns).fill(0);
-
-    // Process each epic column
-    for (let epicIndex = 0; epicIndex < sortedEpics.length; epicIndex++) {
-      const epicKey = sortedEpics[epicIndex];
-      const epicIssues = issuesByEpic[epicKey];
-
-      // Calculate X position for this epic column
-      const epicX = viewport.x + sprintXOffset + epicIndex * columnWidth;
-
-      // Process issues in batches to prevent UI blocking
-      for (
-        let batchStart = 0;
-        batchStart < epicIssues.length;
-        batchStart += BATCH_SIZE
-      ) {
-        // Show progress feedback
-        processedCount += Math.min(BATCH_SIZE, epicIssues.length - batchStart);
-        if (
-          processedCount % progressInterval === 0 ||
-          processedCount === totalIssues
-        ) {
-          const progress = Math.round((processedCount / totalIssues) * 100);
-          figma.notify(
-            `Processing ${processedCount}/${totalIssues} (${progress}%)...`,
-            {
-              timeout: TIMING_CONFIG.PROGRESS_NOTIFICATION_TIMEOUT,
-            }
-          );
+        if (!issuesByEpic[epicKey]) {
+          issuesByEpic[epicKey] = [];
         }
+        issuesByEpic[epicKey].push(issue);
+      }
 
-        // Process batch
-        const batchResult = await processIssueBatch(
-          epicIssues,
-          batchStart,
-          BATCH_SIZE,
-          epicX,
-          cardsStartY,
-          epicKey,
-          epicColumnHeights,
-          epicIndex,
-          columnHeights,
-          createdFrames,
-          spacing
+      // Get sorted list of epics (for consistent ordering)
+      const sortedEpics = Object.keys(issuesByEpic).sort();
+      const numEpics = sortedEpics.length;
+      const numColumns = Math.max(numEpics, 3); // Minimum 3 columns, but can have more if more epics
+
+      // Calculate capacity per assignee for this sprint
+      const capacity = calculateCapacity(sprintIssues);
+
+      // Calculate sprint label width based on number of epic columns
+      const columnWidth = cardWidth + spacing;
+      const sprintLabelWidth = numColumns * columnWidth - spacing; // Total width of all epic columns
+      const fixedSprintLabelY =
+        viewport.y + LAYOUT_CONFIG.SPRINT_LABEL_Y_OFFSET; // Fixed Y position for sprint label
+      const spacingBetweenTableAndLabel = LAYOUT_CONFIG.SPRINT_TABLE_SPACING;
+
+      // Calculate table height first (if table exists) - use helper function
+      let capacityTableHeight = 0;
+      if (Object.keys(capacity).length > 0) {
+        capacityTableHeight = calculateTableHeight(capacity);
+
+        // Create the table at the correct position (growing upward from fixed label position)
+        const tableX = viewport.x + sprintXOffset;
+        const tableY =
+          fixedSprintLabelY - capacityTableHeight - spacingBetweenTableAndLabel;
+
+        const tableResult = await createCapacityTable(
+          capacity,
+          tableX,
+          tableY,
+          sprintLabelWidth
         );
 
-        totalCreated += batchResult.created;
-        totalSkipped += batchResult.skipped;
-
-        // Yield control to UI after each batch
-        if (batchStart + BATCH_SIZE < epicIssues.length) {
-          await yieldToUI();
+        // Add all table nodes to createdFrames for scrolling
+        for (const node of tableResult.nodes) {
+          createdFrames.push(node as any);
         }
       }
+
+      // Create sprint label - large text spanning all epic columns
+      const sprintLabel = figma.createText();
+      sprintLabel.characters = sprint;
+      sprintLabel.fontSize = LAYOUT_CONFIG.SPRINT_LABEL_FONT_SIZE;
+      try {
+        sprintLabel.fontName = { family: 'Inter', style: 'Bold' };
+      } catch (e) {
+        console.warn('Could not set Bold font for sprint label, using default');
+      }
+      sprintLabel.fills = [{ type: 'SOLID', color: COLOR_CONFIG.TEXT_DARK }];
+
+      // Position label centered above all epic columns
+      sprintLabel.x =
+        viewport.x + sprintXOffset + (sprintLabelWidth - sprintLabel.width) / 2; // Center the label
+      sprintLabel.y = fixedSprintLabelY; // Fixed Y position - never changes
+
+      figma.currentPage.appendChild(sprintLabel);
+      createdFrames.push(sprintLabel as any); // Add to frames for scrolling
+
+      // Get sprint dates from the first issue in this sprint (if available)
+      const sprintDates =
+        sprintIssues.length > 0
+          ? getSprintDates(sprintIssues[0])
+          : 'MM/DD/YYYY - MM/DD/YYYY';
+
+      // Create sprint dates text - smaller font, positioned under the sprint label
+      const sprintDatesText = figma.createText();
+      sprintDatesText.characters = sprintDates;
+      sprintDatesText.fontSize = LAYOUT_CONFIG.SPRINT_DATES_FONT_SIZE;
+      sprintDatesText.fills = [
+        { type: 'SOLID', color: COLOR_CONFIG.TEXT_SECONDARY },
+      ];
+
+      // Position dates centered under the sprint label
+      sprintDatesText.x =
+        viewport.x +
+        sprintXOffset +
+        (sprintLabelWidth - sprintDatesText.width) / 2; // Center the dates
+      sprintDatesText.y = sprintLabel.y + sprintLabel.height + 5; // Position below label with small spacing
+
+      figma.currentPage.appendChild(sprintDatesText);
+      createdFrames.push(sprintDatesText as any); // Add to frames for scrolling
+
+      // Add a line under the sprint dates spanning all epic columns
+      const line = figma.createLine();
+      const lineY =
+        sprintDatesText.y +
+        sprintDatesText.height +
+        LAYOUT_CONFIG.SPRINT_LINE_SPACING;
+      const lineStartX = viewport.x + sprintXOffset;
+
+      line.x = lineStartX;
+      line.y = lineY;
+      line.resize(sprintLabelWidth, 0); // Horizontal line spanning all epic columns
+      line.strokes = [{ type: 'SOLID', color: COLOR_CONFIG.TEXT_SECONDARY }];
+      line.strokeWeight = COLOR_CONFIG.BORDER_WEIGHT;
+
+      figma.currentPage.appendChild(line);
+      createdFrames.push(line as any); // Add to frames for scrolling
+
+      // Calculate starting Y position for cards (after the line with spacing)
+      const spacingAfterLine = LAYOUT_CONFIG.SPRINT_AFTER_LINE_SPACING;
+      const cardsStartY = lineY + spacingAfterLine;
+
+      // Track position for each column (epic columns + any empty columns to reach minimum of 3)
+      const epicColumnHeights: { [epicKey: string]: number } = {};
+      for (const epicKey of sortedEpics) {
+        epicColumnHeights[epicKey] = 0;
+      }
+      // Initialize heights for all columns (including empty ones if needed)
+      const columnHeights: number[] = new Array(numColumns).fill(0);
+
+      // Process each epic column
+      for (let epicIndex = 0; epicIndex < sortedEpics.length; epicIndex++) {
+        const epicKey = sortedEpics[epicIndex];
+        const epicIssues = issuesByEpic[epicKey];
+
+        // Calculate X position for this epic column
+        const epicX = viewport.x + sprintXOffset + epicIndex * columnWidth;
+
+        // Process issues in batches to prevent UI blocking
+        for (
+          let batchStart = 0;
+          batchStart < epicIssues.length;
+          batchStart += BATCH_SIZE
+        ) {
+          // Show progress feedback
+          processedCount += Math.min(
+            BATCH_SIZE,
+            epicIssues.length - batchStart
+          );
+          if (
+            processedCount % progressInterval === 0 ||
+            processedCount === totalIssues
+          ) {
+            const progress = Math.round((processedCount / totalIssues) * 100);
+            figma.notify(
+              `Processing ${processedCount}/${totalIssues} (${progress}%)...`,
+              {
+                timeout: TIMING_CONFIG.PROGRESS_NOTIFICATION_TIMEOUT,
+              }
+            );
+          }
+
+          // Process batch
+          const batchResult = await processIssueBatch(
+            epicIssues,
+            batchStart,
+            BATCH_SIZE,
+            epicX,
+            cardsStartY,
+            epicKey,
+            epicColumnHeights,
+            epicIndex,
+            columnHeights,
+            createdFrames,
+            spacing,
+            jiraBaseUrl
+          );
+
+          totalCreated += batchResult.created;
+          totalSkipped += batchResult.skipped;
+
+          // Yield control to UI after each batch
+          if (batchStart + BATCH_SIZE < epicIssues.length) {
+            await yieldToUI();
+          }
+        }
+      }
+
+      // Move to next sprint position
+      // Find the maximum height across all columns in this sprint (including empty columns)
+      const maxSprintHeight = Math.max(...columnHeights, 0);
+      // Move X position for next sprint (all epic columns width + spacing)
+      sprintXOffset += sprintLabelWidth + sprintSpacing;
     }
 
-    // Move to next sprint position
-    // Find the maximum height across all columns in this sprint (including empty columns)
-    const maxSprintHeight = Math.max(...columnHeights, 0);
-    // Move X position for next sprint (all epic columns width + spacing)
-    sprintXOffset += sprintLabelWidth + sprintSpacing;
-  }
+    // Scroll to show all created cards
+    if (createdFrames.length > 0) {
+      figma.viewport.scrollAndZoomIntoView(createdFrames);
+    }
 
-  // Scroll to show all created cards
-  if (createdFrames.length > 0) {
-    figma.viewport.scrollAndZoomIntoView(createdFrames);
+    const message =
+      totalCreated > 0
+        ? `✅ Import completed: ${totalCreated} card(s) created${
+            totalSkipped > 0 ? `, ${totalSkipped} skipped` : ''
+          }`
+        : `⚠️ Import completed: No cards created${
+            totalSkipped > 0 ? `, ${totalSkipped} skipped` : ''
+          }`;
+    figma.notify(message, { timeout: 3000 });
+  } finally {
+    // Always clear importing flag, even if there was an error
+    isImporting = false;
   }
+}
 
-  const message =
-    totalCreated > 0
-      ? `✅ Created ${totalCreated} card(s)${
-          totalSkipped > 0 ? `, skipped ${totalSkipped}` : ''
-        }`
-      : `⚠️ No cards created${
-          totalSkipped > 0 ? `, ${totalSkipped} skipped` : ''
-        }`;
-  figma.notify(message, { timeout: 3000 });
+/**
+ * Maps template display name to template key for lookups in TEMPLATES.
+ */
+function getTemplateKeyFromDisplayName(
+  displayName: string
+): keyof typeof TEMPLATES | null {
+  // Map display names to template keys
+  const displayNameToKey: { [key: string]: keyof typeof TEMPLATES } = {
+    Theme: 'theme',
+    Initiative: 'initiative',
+    Milestone: 'milestone',
+    Epic: 'epic',
+    'User Story': 'userStory',
+    Task: 'task',
+    Spike: 'spike',
+    Test: 'test',
+  };
+  return displayNameToKey[displayName] || null;
 }
 
 // Function to extract data from a card frame
@@ -1000,7 +1062,7 @@ function extractCardData(frame: FrameNode): {
   fields: { label: string; value: string }[];
   issueKey?: string;
 } | null {
-  // Check if this is one of our template cards by checking the name
+  // Check if this is one of our template cards by checking the name or plugin data
   // Use Set for O(1) lookup performance
   const cardTypes = new Set([
     'Theme',
@@ -1012,8 +1074,69 @@ function extractCardData(frame: FrameNode): {
     'Spike',
     'Test',
   ]);
-  if (!cardTypes.has(frame.name)) return null;
-  const cardType = frame.name;
+
+  // First check frame name (primary method)
+  let cardType = frame.name;
+
+  // If frame name doesn't match, check plugin data for template type
+  // This ensures imported cards are found even if frame name was changed
+  if (!cardTypes.has(cardType)) {
+    const templateTypeFromData = frame.getPluginData('templateType');
+    if (templateTypeFromData && cardTypes.has(templateTypeFromData)) {
+      cardType = templateTypeFromData;
+    } else {
+      // If we have an issueKey, this is likely an imported card
+      // Try to infer the type from the frame structure or use a default
+      const issueKey = frame.getPluginData('issueKey');
+      if (issueKey && issueKey.trim() !== '') {
+        // This is an imported card - try to infer type from frame structure
+        // Check if frame has children that match our card structure
+        const textNodes = frame.findAll(
+          (node) => node.type === 'TEXT'
+        ) as TextNode[];
+        if (textNodes.length > 0) {
+          // Try to match based on frame structure or default to 'User Story'
+          // For now, default to 'User Story' as it's the most common type
+          // The actual type should be stored in plugin data, but if it's missing,
+          // we'll try to extract what we can
+          cardType = 'User Story'; // Default fallback for imported cards
+          console.warn(
+            `Card with issueKey ${issueKey} missing templateType in plugin data, defaulting to User Story`
+          );
+        } else {
+          // Not one of our template cards
+          return null;
+        }
+      } else {
+        // Not one of our template cards
+        return null;
+      }
+    }
+  }
+
+  // Convert display name to template key for lookups in TEMPLATES
+  let templateKey = getTemplateKeyFromDisplayName(cardType);
+  if (!templateKey) {
+    // If we can't identify the type but have an issueKey, try to infer from structure
+    const issueKey = frame.getPluginData('issueKey');
+    if (issueKey && issueKey.trim() !== '') {
+      // This is an imported card - use a reasonable default
+      // Check frame structure to try to infer type, or default to 'userStory'
+      templateKey = 'userStory'; // Default fallback
+      cardType = 'User Story'; // Update cardType to match
+      console.warn(
+        `Could not identify card type for imported card with issueKey ${issueKey}, defaulting to User Story. Frame name: ${
+          frame.name
+        }, templateType from data: ${frame.getPluginData('templateType')}`
+      );
+    } else {
+      // Invalid card type and no issueKey, skip this card
+      console.log(
+        `Skipping frame ${frame.name} - not a template card and no issueKey`
+      );
+      return null;
+    }
+  }
 
   const fields: { label: string; value: string }[] = [];
 
@@ -1059,9 +1182,7 @@ function extractCardData(frame: FrameNode): {
   // Extract large number field (Story Points or Priority Rank) from bottom right FIRST
   // Do this before extracting Assignee to avoid confusion
   // These are displayed as large numbers (24px, bold) at the bottom of the card
-  const largeNumberField = getLargeNumberField(
-    cardType as keyof typeof TEMPLATES
-  );
+  const largeNumberField = getLargeNumberField(templateKey);
   if (largeNumberField) {
     // Find the large number text node
     // Large numbers are positioned at bottom right
@@ -1141,29 +1262,12 @@ function extractCardData(frame: FrameNode): {
       }
     }
 
-    // Debug: Log if we didn't find the number
-    if (!foundNumber) {
-      console.log(
-        `Could not find ${largeNumberField} for ${cardType}. Frame size: ${frame.width}x${frame.height}`
-      );
-      console.log(
-        'Bottom candidate nodes:',
-        candidateNodes
-          .filter((n) => n.y > bottomThreshold)
-          .slice(0, 5)
-          .map((n) => ({
-            text: n.characters.substring(0, 20),
-            x: n.x,
-            y: n.y,
-            isNumber: /^[\d?#]+$/.test(n.characters.trim()),
-          }))
-      );
-    }
+    // If not found, fallback logic will handle it below
   }
 
   // Extract Assignee from bottom left (if applicable)
   // Assignee is displayed as large text (24px, bold) at the bottom left
-  if (hasAssigneeField(cardType as keyof typeof TEMPLATES)) {
+  if (templateKey && hasAssigneeField(templateKey)) {
     // Get all text nodes except title, sorted by Y (bottom to top), then by X (left to right)
     const candidateNodes = textNodes
       .filter((node) => node !== titleNode && node.characters.trim())
@@ -1239,32 +1343,16 @@ function extractCardData(frame: FrameNode): {
       }
     }
 
-    // Debug: Log if we didn't find the assignee
-    if (!foundAssignee) {
-      console.log(
-        `Could not find Assignee for ${cardType}. Frame size: ${frame.width}x${frame.height}`
-      );
-      console.log(
-        'Bottom candidate nodes:',
-        candidateNodes
-          .filter((n) => n.y > bottomThreshold)
-          .slice(0, 5)
-          .map((n) => ({
-            text: n.characters.substring(0, 20),
-            x: n.x,
-            y: n.y,
-            isNumber: /^[\d?#]+$/.test(n.characters.trim()),
-          }))
-      );
-    }
+    // If not found, fallback logic will handle it below
   }
 
   // Extract issue key from frame metadata if available
+  // This is critical for round-trip export to Jira
   const issueKey = frame.getPluginData('issueKey') || '';
 
-  // Ensure Story Points and Assignee are always included if the card type should have them
-  // This is a fallback in case extraction didn't find them
-  if (hasAssigneeField(cardType as keyof typeof TEMPLATES)) {
+  // Ensure Assignee is always included if the card type should have it
+  // This is critical for export - assignee must be extracted
+  if (templateKey && hasAssigneeField(templateKey)) {
     const hasAssignee = fields.some((f) => f.label === 'Assignee');
     if (!hasAssignee) {
       // Try to find it in any text node at the bottom left
@@ -1286,14 +1374,15 @@ function extractCardData(frame: FrameNode): {
         });
       } else {
         // Default to Unassigned if we can't find it
+        // This ensures assignee field is always present for export
         fields.push({ label: 'Assignee', value: 'Unassigned' });
       }
     }
   }
 
-  const largeNumberFieldForFallback = getLargeNumberField(
-    cardType as keyof typeof TEMPLATES
-  );
+  const largeNumberFieldForFallback = templateKey
+    ? getLargeNumberField(templateKey)
+    : null;
   if (largeNumberFieldForFallback) {
     const hasLargeNumber = fields.some(
       (f) => f.label === largeNumberFieldForFallback
@@ -1328,19 +1417,14 @@ function extractCardData(frame: FrameNode): {
     }
   }
 
-  // Debug: Log extracted fields to help troubleshoot
-  console.log(
-    `Extracted fields for ${cardType}:`,
-    fields.map((f) => `${f.label}: ${f.value}`).join(', ')
-  );
-  console.log(`Frame dimensions: ${frame.width}x${frame.height}`);
-  console.log(`Total text nodes: ${textNodes.length}`);
-
+  // Return extracted card data with issue key for export
+  // Issue keys are preserved for imported cards to enable round-trip to Jira
+  // Always include issueKey even if empty (for consistency)
   return {
     type: cardType,
     title: actualTitle, // Include the actual title from text node
     fields,
-    issueKey: issueKey, // Include issue key if available
+    issueKey: issueKey || undefined, // Include issue key if available (undefined if empty for cleaner export)
   };
 }
 
@@ -1366,6 +1450,161 @@ function mapFieldToCSVColumn(fieldLabel: string, templateType: string): string {
   };
 
   return mapping[fieldLabel] || fieldLabel; // Return original if no mapping
+}
+
+/**
+ * Gets the default value for a field in a template type.
+ * Returns null if the field doesn't exist in the template.
+ */
+function getDefaultValueForField(
+  templateType: string,
+  fieldLabel: string
+): string | null {
+  const templateKey = getTemplateKeyFromDisplayName(templateType);
+  if (!templateKey) {
+    return null;
+  }
+
+  const template = TEMPLATES[templateKey];
+  if (!template) {
+    return null;
+  }
+
+  const field = template.fields.find((f) => f.label === fieldLabel);
+  return field ? field.value : null;
+}
+
+/**
+ * Checks if a field value matches a default value (case-insensitive, trimmed).
+ * Also handles common variations and placeholder patterns.
+ */
+function isDefaultValue(value: string, defaultValue: string | null): boolean {
+  if (!defaultValue) {
+    return false;
+  }
+
+  const normalizedValue = value.trim();
+  const normalizedDefault = defaultValue.trim();
+
+  // Exact match
+  if (normalizedValue === normalizedDefault) {
+    return true;
+  }
+
+  // Check for placeholder patterns
+  const placeholderPatterns = [
+    /^\[.+\]$/, // [something]
+    /^\.\.\.$/, // ...
+    /^MM\/DD\/YYYY$/, // Date placeholder
+    /^#+$/, // Just # symbols
+    /^\?+$/, // Just ? symbols
+  ];
+
+  for (const pattern of placeholderPatterns) {
+    if (pattern.test(normalizedValue) && pattern.test(normalizedDefault)) {
+      return true;
+    }
+  }
+
+  // Check if value contains only placeholder text
+  if (/^\[.+\]$/.test(normalizedValue)) {
+    return true;
+  }
+
+  // Special case: Story Points with "?" should always be treated as default
+  // regardless of whether there's a matching default value
+  if (normalizedValue === '?' || normalizedValue === '#') {
+    return true;
+  }
+
+  // Check for common default patterns (case-insensitive, with flexible whitespace)
+  const defaultPatterns = [
+    /^Theme Name$/i,
+    /^Milestone Name$/i,
+    /^Epic Name$/i,
+    /^Initiative Name$/i,
+    /^Task description\.\.\.$/i,
+    /^Spike description\.\.\.$/i,
+    /^Epic description\.\.\.$/i,
+    /^Milestone description\.\.\.$/i,
+    /^Initiative description\.\.\.$/i,
+    /^Business objective description\.\.\.$/i,
+    /^User story description\.\.\.$/i,
+    /^Team Name$/i,
+    /^None$/i,
+    /^Unassigned$/i,
+    /^High$/i,
+    // Acceptance Criteria default pattern (flexible whitespace)
+    /^-?\s*Criterion\s+1\s*-?\s*Criterion\s+2\s*-?\s*Criterion\s+3\s*$/i,
+  ];
+
+  for (const pattern of defaultPatterns) {
+    if (pattern.test(normalizedValue) && pattern.test(normalizedDefault)) {
+      return true;
+    }
+  }
+
+  // Check for concatenated descriptions that contain only default values
+  // e.g., "As a [user type], I want [feature], so that [benefit]"
+  if (
+    normalizedValue.includes('[user type]') &&
+    normalizedValue.includes('[feature]') &&
+    normalizedValue.includes('[benefit]')
+  ) {
+    return true;
+  }
+
+  // Check for test descriptions with only default values
+  // e.g., "Given [initial context], When [event occurs], Then [expected outcome]"
+  if (
+    normalizedValue.includes('[initial context]') &&
+    normalizedValue.includes('[event occurs]') &&
+    normalizedValue.includes('[expected outcome]')
+  ) {
+    return true;
+  }
+
+  return false;
+}
+
+/**
+ * Cleans card data by removing default values (sets them to empty string).
+ */
+function cleanCardData(cardData: {
+  type: string;
+  title: string;
+  fields: { label: string; value: string }[];
+  issueKey?: string;
+}): {
+  type: string;
+  title: string;
+  fields: { label: string; value: string }[];
+  issueKey?: string;
+} {
+  const cleanedFields = cardData.fields.map((field) => {
+    const defaultValue = getDefaultValueForField(cardData.type, field.label);
+
+    // Always treat "?" and "#" as default values for Story Points and Priority Rank
+    // even if there's no default value defined in the template
+    if (
+      (field.label === 'Story Points' || field.label === 'Priority Rank') &&
+      (field.value.trim() === '?' || field.value.trim() === '#')
+    ) {
+      return { label: field.label, value: '' };
+    }
+
+    if (isDefaultValue(field.value, defaultValue)) {
+      return { label: field.label, value: '' };
+    }
+    return field;
+  });
+
+  return {
+    type: cardData.type,
+    title: cardData.title,
+    fields: cleanedFields,
+    issueKey: cardData.issueKey,
+  };
 }
 
 /**
@@ -1407,9 +1646,10 @@ function getCanonicalFieldOrder(): string[] {
 }
 
 /**
- * Exports all template cards on the current page to CSV format.
+ * Exports template cards on the current page to CSV format.
+ * @param filterNew - If true, only export cards without issue keys (new cards). If false, export all cards.
  */
-function exportCardsToCSV(): void {
+function exportCardsToCSV(filterNew: boolean = false): void {
   const cards: Array<{
     type: string;
     title: string;
@@ -1429,16 +1669,114 @@ function exportCardsToCSV(): void {
     'Spike',
     'Test',
   ]);
-  const frames = figma.currentPage.findAll(
-    (node) => node.type === 'FRAME' && templateNames.has(node.name)
+
+  // Find frames by name (primary method) or by plugin data templateType (fallback for imported cards)
+  const allFrames = figma.currentPage.findAll(
+    (node) => node.type === 'FRAME'
   ) as FrameNode[];
+
+  const frames = allFrames.filter((frame) => {
+    // Check frame name first (primary method for template-created cards)
+    if (templateNames.has(frame.name)) {
+      return true;
+    }
+
+    // Check plugin data for template type (ensures imported cards are found)
+    const templateType = frame.getPluginData('templateType');
+    if (templateType && templateNames.has(templateType)) {
+      return true;
+    }
+
+    // Also check if frame has issueKey (indicates it's an imported card)
+    // This is a fallback for cards that might not have templateType set correctly
+    const issueKey = frame.getPluginData('issueKey');
+    if (issueKey && issueKey.trim() !== '') {
+      // This is definitely an imported card - include it
+      // extractCardData will handle type inference
+      return true;
+    }
+
+    // Last resort: check if frame structure looks like one of our cards
+    // Our cards have specific characteristics:
+    // - They are frames with text nodes
+    // - They have a specific width (CARD_CONFIG.WIDTH = 500)
+    // - They have rounded corners
+    const textNodes = frame.findAll(
+      (node) => node.type === 'TEXT'
+    ) as TextNode[];
+    if (textNodes.length >= 2) {
+      // Has multiple text nodes (title + at least one field)
+      // Check if it has our card characteristics
+      const cornerRadius =
+        typeof frame.cornerRadius === 'number' ? frame.cornerRadius : 0;
+      const frameWidth = typeof frame.width === 'number' ? frame.width : 0;
+      const hasRoundedCorners = cornerRadius > 0;
+      const hasReasonableWidth = frameWidth > 400 && frameWidth < 600; // Close to our 500px width
+      if (hasRoundedCorners && hasReasonableWidth) {
+        // This looks like one of our cards - include it
+        console.log(
+          `Including frame "${String(
+            frame.name
+          )}" based on structure (width: ${frameWidth}, corners: ${cornerRadius}, textNodes: ${
+            textNodes.length
+          })`
+        );
+        return true;
+      }
+    }
+
+    return false;
+  });
+
+  // Log for debugging if no frames found
+  if (frames.length === 0) {
+    if (allFrames.length > 0) {
+      console.log(
+        'No template cards found. All frames on page:',
+        allFrames.map((f) => ({
+          name: f.name,
+          templateType: f.getPluginData('templateType'),
+          issueKey: f.getPluginData('issueKey'),
+          hasTextNodes: f.findAll((n) => n.type === 'TEXT').length > 0,
+        }))
+      );
+    } else {
+      console.log('No frames found on page at all');
+    }
+  } else {
+    // Log what we found for debugging
+    console.log(
+      `Found ${frames.length} potential card(s):`,
+      frames.map((f) => ({
+        name: f.name,
+        templateType: f.getPluginData('templateType'),
+        issueKey: f.getPluginData('issueKey'),
+      }))
+    );
+  }
 
   // Extract data from each card
   for (const frame of frames) {
     const cardData = extractCardData(frame);
+    if (!cardData) {
+      console.warn(
+        `extractCardData returned null for frame:`,
+        frame.name,
+        'templateType:',
+        frame.getPluginData('templateType'),
+        'issueKey:',
+        frame.getPluginData('issueKey')
+      );
+      continue;
+    }
     if (cardData) {
       // Skip milestones - they won't be exported to Jira
       if (cardData.type === 'Milestone') {
+        continue;
+      }
+
+      // If filtering for new cards only, skip cards with issue keys
+      if (filterNew && cardData.issueKey && cardData.issueKey.trim() !== '') {
         continue;
       }
 
@@ -1501,12 +1839,20 @@ function exportCardsToCSV(): void {
         }
       }
 
-      cards.push({
+      // Get issue key directly from frame metadata (more reliable than extracted data)
+      // This ensures we get the issue key even if extraction missed it
+      const frameIssueKey = frame.getPluginData('issueKey') || '';
+      const finalIssueKey = cardData.issueKey || frameIssueKey;
+
+      // Clean the card data by removing default values before exporting
+      const cleanedCardData = cleanCardData({
         type: cardData.type,
         title: title,
         fields: cardData.fields,
-        issueKey: cardData.issueKey,
+        issueKey: finalIssueKey || undefined,
       });
+
+      cards.push(cleanedCardData);
     }
   }
 
@@ -1546,8 +1892,9 @@ function exportCardsToCSV(): void {
       allCSVColumns.add(csvColumn);
     });
 
-    // Add Issue key if available
-    if (card.issueKey) {
+    // Add Issue key column if any card has an issue key
+    // This enables round-trip export to Jira for imported cards
+    if (card.issueKey && card.issueKey.trim() !== '') {
       allCSVColumns.add('Issue key');
     }
   });
@@ -1636,15 +1983,16 @@ function exportCardsToCSV(): void {
   const csvContent = rows.join('\n');
 
   // Send CSV to UI for download
+  const exportType = filterNew ? 'new' : 'all';
   figma.ui.postMessage({
     type: 'export-csv',
     csv: csvContent,
-    filename: `pi-planning-export-${
+    filename: `pi-planning-export-${exportType}-${
       new Date().toISOString().split('T')[0]
     }.csv`,
   });
 
-  figma.notify(`✅ Exported ${cards.length} card(s) to CSV`);
+  figma.notify(`✅ Exported ${cards.length} card(s) to CSV (${exportType})`);
 }
 
 // getErrorMessage is imported from utils.ts
@@ -1657,10 +2005,10 @@ figma.ui.onmessage = async (msg: PluginMessage) => {
   if (msg.type === 'insert-template') {
     // TypeScript now knows msg.templateType exists
     try {
-      await createTemplateCard(msg.templateType);
-      figma.notify(
-        `✅ ${TEMPLATES[msg.templateType].title} template inserted!`
-      );
+      const templateType = msg.templateType as keyof typeof TEMPLATES;
+      await createTemplateCard(templateType);
+      const template = TEMPLATES[templateType];
+      figma.notify(`✅ ${template.title} template inserted!`);
     } catch (error) {
       const errorMessage = getErrorMessage(error);
       figma.notify(`❌ Error inserting template: ${errorMessage}`);
@@ -1670,7 +2018,8 @@ figma.ui.onmessage = async (msg: PluginMessage) => {
     // TypeScript now knows msg.csvText exists
     try {
       console.log('Starting CSV import, data length:', msg.csvText.length);
-      await importCardsFromCSV(msg.csvText);
+      console.log('Jira Base URL received:', msg.jiraBaseUrl);
+      await importCardsFromCSV(msg.csvText, msg.jiraBaseUrl);
     } catch (error) {
       const errorMessage = getErrorMessage(error);
       figma.notify(`❌ Error importing CSV: ${errorMessage}`);
@@ -1678,11 +2027,32 @@ figma.ui.onmessage = async (msg: PluginMessage) => {
     }
   } else if (msg.type === 'export-csv') {
     try {
-      exportCardsToCSV();
+      const filterNew = msg.filterNew || false;
+      exportCardsToCSV(filterNew);
     } catch (error) {
       const errorMessage = getErrorMessage(error);
       figma.notify(`❌ Error exporting CSV: ${errorMessage}`);
       console.error('CSV export error:', error);
+    }
+  } else if (msg.type === 'get-jira-url') {
+    try {
+      const savedUrl = await figma.clientStorage.getAsync('jiraBaseUrl');
+      figma.ui.postMessage({
+        type: 'jira-url-loaded',
+        jiraBaseUrl: savedUrl || undefined,
+      } as UIMessage);
+    } catch (error) {
+      console.error('Error loading Jira URL:', error);
+      figma.ui.postMessage({
+        type: 'jira-url-loaded',
+        jiraBaseUrl: undefined,
+      } as UIMessage);
+    }
+  } else if (msg.type === 'set-jira-url') {
+    try {
+      await figma.clientStorage.setAsync('jiraBaseUrl', msg.jiraBaseUrl);
+    } catch (error) {
+      console.error('Error saving Jira URL:', error);
     }
   } else if (msg.type === 'close') {
     figma.closePlugin();
@@ -1692,7 +2062,12 @@ figma.ui.onmessage = async (msg: PluginMessage) => {
 /**
  * Handles card duplication detection - removes issue key from duplicates.
  */
-function handleCardDuplication(): void {
+/**
+ * Handles card duplication detection - removes issue key from duplicates.
+ * Only processes cards that haven't been processed yet to avoid unnecessary work.
+ * @returns true if any duplicates were found and processed, false otherwise
+ */
+async function handleCardDuplication(): Promise<boolean> {
   const templateNames = new Set([
     'Theme',
     'Initiative',
@@ -1705,9 +2080,20 @@ function handleCardDuplication(): void {
   ]);
 
   // Find all template cards on the current page
-  const allFrames = figma.currentPage.findAll(
-    (node) => node.type === 'FRAME' && templateNames.has(node.name)
+  // Check both frame name and plugin data to ensure imported cards are included
+  const allFramesNodes = figma.currentPage.findAll(
+    (node) => node.type === 'FRAME'
   ) as FrameNode[];
+
+  const allFrames = allFramesNodes.filter((frame) => {
+    // Check frame name first
+    if (templateNames.has(frame.name)) {
+      return true;
+    }
+    // Check plugin data for template type (ensures imported cards are found)
+    const templateType = frame.getPluginData('templateType');
+    return templateType && templateNames.has(templateType);
+  });
 
   // Track issue keys and their associated node IDs (ordered by creation/position)
   const issueKeyToNodes = new Map<
@@ -1715,6 +2101,7 @@ function handleCardDuplication(): void {
     Array<{ id: string; created: number; frame: FrameNode; isCopy: boolean }>
   >();
 
+  // Collect all cards with issue keys
   allFrames.forEach((frame) => {
     const issueKey = frame.getPluginData('issueKey');
     if (issueKey && issueKey.trim() !== '') {
@@ -1734,23 +2121,30 @@ function handleCardDuplication(): void {
         frame: frame,
         isCopy: isCopy === 'true',
       });
-      console.log(
-        `Found card with issue key: ${issueKey}, isCopy: ${isCopy}, frame: ${frame.name}`
-      );
     }
   });
 
-  console.log(
-    `Total cards with issue keys: ${
-      Array.from(issueKeyToNodes.values()).flat().length
-    }`
-  );
+  // Also check for cards marked as copies that might have hyperlinks but no issue key
+  // (cards that were copied but issue key was already removed)
+  const cardsToCheckForHyperlinks: FrameNode[] = [];
+  allFrames.forEach((frame) => {
+    const isCopy = frame.getPluginData('isCopy');
+    if (isCopy === 'true') {
+      cardsToCheckForHyperlinks.push(frame);
+    }
+  });
+
+  let duplicatesProcessed = false;
+
+  // Only process issue key duplicates if there are cards with issue keys
+  if (issueKeyToNodes.size === 0 && cardsToCheckForHyperlinks.length === 0) {
+    return false; // No cards with issue keys and no copies to check, nothing to process
+  }
 
   // If an issue key appears in multiple cards, remove it from duplicates
   // Keep the first one (not marked as copy, lowest position) as original
-  issueKeyToNodes.forEach((nodes, issueKey) => {
+  for (const [issueKey, nodes] of issueKeyToNodes.entries()) {
     if (nodes.length > 1) {
-      console.log(`Found ${nodes.length} cards with issue key: ${issueKey}`);
       // Sort: non-copies first, then by position
       nodes.sort((a, b) => {
         // If one is a copy and the other isn't, non-copy comes first
@@ -1762,11 +2156,9 @@ function handleCardDuplication(): void {
       });
       const original = nodes[0];
       const duplicates = nodes.slice(1);
-      console.log(
-        `Original: ${original.frame.name} (${original.id}), Duplicates: ${duplicates.length}`
-      );
 
-      duplicates.forEach((duplicate) => {
+      // Process duplicates sequentially to allow async operations
+      for (const duplicate of duplicates) {
         const duplicateFrame = duplicate.frame;
         // Check if this duplicate hasn't been processed yet
         const isCopy = duplicateFrame.getPluginData('isCopy');
@@ -1774,52 +2166,270 @@ function handleCardDuplication(): void {
 
         if (isCopy !== 'true' && !processedCards.has(frameId)) {
           // Remove issue key from duplicate so it's treated as a new card
+          // This ensures duplicates are exported as new cards (without issue key)
           duplicateFrame.setPluginData('issueKey', '');
           // Mark as copy for tracking
           duplicateFrame.setPluginData('isCopy', 'true');
           // Track that we've processed this card
           processedCards.add(frameId);
 
-          // Remove hyperlink from the title if it exists
+          // Remove hyperlink from the title by recreating the text node without hyperlink
           const textNodes = duplicateFrame.findAll(
             (node) => node.type === 'TEXT'
           ) as TextNode[];
           if (textNodes.length > 0) {
             const titleNode = textNodes[0]; // First text node is the title
             try {
-              // Clear hyperlink by setting empty URL
-              titleNode.setRangeHyperlink(0, titleNode.characters.length, {
-                type: 'URL',
-                value: '',
-              });
+              const textLength = titleNode.characters.length;
+              if (textLength > 0) {
+                // Check if hyperlink exists
+                let hasHyperlink = false;
+                try {
+                  const existingHyperlink = titleNode.getRangeHyperlink(
+                    0,
+                    textLength
+                  );
+                  if (
+                    existingHyperlink &&
+                    existingHyperlink !== figma.mixed &&
+                    existingHyperlink.type === 'URL' &&
+                    'value' in existingHyperlink &&
+                    existingHyperlink.value
+                  ) {
+                    hasHyperlink = true;
+                  }
+                } catch (e) {
+                  // Check character by character
+                  for (let i = 0; i < textLength && !hasHyperlink; i++) {
+                    try {
+                      const charHyperlink = titleNode.getRangeHyperlink(
+                        i,
+                        i + 1
+                      );
+                      if (
+                        charHyperlink &&
+                        charHyperlink !== figma.mixed &&
+                        charHyperlink.type === 'URL' &&
+                        'value' in charHyperlink &&
+                        charHyperlink.value
+                      ) {
+                        hasHyperlink = true;
+                        break;
+                      }
+                    } catch (charError) {
+                      // Continue
+                    }
+                  }
+                }
+
+                if (hasHyperlink) {
+                  // Save text content and properties
+                  const textContent = titleNode.characters;
+                  const fontSize = titleNode.fontSize;
+                  const fontName = titleNode.fontName;
+                  const fills = titleNode.fills;
+                  const x = titleNode.x;
+                  const y = titleNode.y;
+                  const width = titleNode.width;
+                  const textAlignHorizontal = titleNode.textAlignHorizontal;
+                  const textAlignVertical = titleNode.textAlignVertical;
+                  const textAutoResize = titleNode.textAutoResize;
+
+                  // Create new text node without hyperlink
+                  const newTitleNode = figma.createText();
+
+                  // Set font name first (before loading and setting characters)
+                  if (fontName !== figma.mixed) {
+                    newTitleNode.fontName = fontName;
+                    // Load font after setting font name
+                    await figma.loadFontAsync(fontName);
+                  }
+
+                  // Now set characters (font is loaded)
+                  newTitleNode.characters = textContent;
+                  newTitleNode.fontSize = fontSize;
+                  newTitleNode.fills = fills;
+                  newTitleNode.x = x;
+                  newTitleNode.y = y;
+                  newTitleNode.resize(width, newTitleNode.height);
+                  if (textAlignHorizontal) {
+                    newTitleNode.textAlignHorizontal = textAlignHorizontal;
+                  }
+                  if (textAlignVertical) {
+                    newTitleNode.textAlignVertical = textAlignVertical;
+                  }
+                  if (textAutoResize) {
+                    newTitleNode.textAutoResize = textAutoResize;
+                  }
+
+                  // Replace old text node with new one
+                  const parent = titleNode.parent;
+                  if (parent) {
+                    const index = parent.children.indexOf(titleNode);
+                    parent.insertChild(index, newTitleNode);
+                    titleNode.remove();
+                  }
+
+                  console.log(
+                    `Removed hyperlink from copied card by recreating text node: ${duplicateFrame.name}`
+                  );
+                }
+              }
             } catch (e) {
-              // Hyperlink might not exist or already cleared, ignore error
+              // Hyperlink removal failed, log but continue
+              console.warn('Error removing hyperlink from copied card:', e);
             }
           }
 
-          // Notify user that the card has been marked for export
-          const cardTitle =
-            textNodes.length > 0 ? textNodes[0].characters.trim() : 'Card';
-          figma.notify(
-            `📋 Copied card "${cardTitle}" marked for export (no issue key)`
-          );
+          // Notify user that the card has been marked for export (only if not importing)
+          if (!isImporting) {
+            const cardTitle =
+              textNodes.length > 0 ? textNodes[0].characters.trim() : 'Card';
+            figma.notify(
+              `📋 Copied card "${cardTitle}" marked for export (no issue key)`
+            );
+          }
+          duplicatesProcessed = true;
         }
-      });
+      }
     }
-  });
+  }
+
+  // Also remove hyperlinks from cards marked as copies (even if they don't have issue keys)
+  // This ensures that when a card is copied, the hyperlink is removed
+  for (const copyFrame of cardsToCheckForHyperlinks) {
+    // Skip if this card was already processed above
+    const frameId = copyFrame.id;
+    if (processedCards.has(frameId)) {
+      continue;
+    }
+
+    const textNodes = copyFrame.findAll(
+      (node) => node.type === 'TEXT'
+    ) as TextNode[];
+    if (textNodes.length > 0) {
+      const titleNode = textNodes[0]; // First text node is the title
+      try {
+        const textLength = titleNode.characters.length;
+        if (textLength > 0) {
+          // Check if hyperlink exists
+          let hasHyperlink = false;
+          try {
+            const existingHyperlink = titleNode.getRangeHyperlink(
+              0,
+              textLength
+            );
+            if (
+              existingHyperlink &&
+              existingHyperlink !== figma.mixed &&
+              existingHyperlink.type === 'URL' &&
+              'value' in existingHyperlink &&
+              existingHyperlink.value
+            ) {
+              hasHyperlink = true;
+            }
+          } catch (e) {
+            // Check character by character
+            for (let i = 0; i < textLength && !hasHyperlink; i++) {
+              try {
+                const charHyperlink = titleNode.getRangeHyperlink(i, i + 1);
+                if (
+                  charHyperlink &&
+                  charHyperlink !== figma.mixed &&
+                  charHyperlink.type === 'URL' &&
+                  'value' in charHyperlink &&
+                  charHyperlink.value
+                ) {
+                  hasHyperlink = true;
+                  break;
+                }
+              } catch (charError) {
+                // Continue
+              }
+            }
+          }
+
+          if (hasHyperlink) {
+            // Save text content and properties
+            const textContent = titleNode.characters;
+            const fontSize = titleNode.fontSize;
+            const fontName = titleNode.fontName;
+            const fills = titleNode.fills;
+            const x = titleNode.x;
+            const y = titleNode.y;
+            const width = titleNode.width;
+            const textAlignHorizontal = titleNode.textAlignHorizontal;
+            const textAlignVertical = titleNode.textAlignVertical;
+            const textAutoResize = titleNode.textAutoResize;
+
+            // Create new text node without hyperlink
+            const newTitleNode = figma.createText();
+
+            // Set font name first (before loading and setting characters)
+            if (fontName !== figma.mixed) {
+              newTitleNode.fontName = fontName;
+              // Load font after setting font name
+              await figma.loadFontAsync(fontName);
+            }
+
+            // Now set characters (font is loaded)
+            newTitleNode.characters = textContent;
+            newTitleNode.fontSize = fontSize;
+            newTitleNode.fills = fills;
+            newTitleNode.x = x;
+            newTitleNode.y = y;
+            newTitleNode.resize(width, newTitleNode.height);
+            if (textAlignHorizontal) {
+              newTitleNode.textAlignHorizontal = textAlignHorizontal;
+            }
+            if (textAlignVertical) {
+              newTitleNode.textAlignVertical = textAlignVertical;
+            }
+            if (textAutoResize) {
+              newTitleNode.textAutoResize = textAutoResize;
+            }
+
+            // Replace old text node with new one
+            const parent = titleNode.parent;
+            if (parent) {
+              const index = parent.children.indexOf(titleNode);
+              parent.insertChild(index, newTitleNode);
+              titleNode.remove();
+            }
+
+            console.log(
+              `Removed hyperlink from copied card (marked as copy): ${copyFrame.name}`
+            );
+            processedCards.add(frameId);
+            duplicatesProcessed = true;
+          }
+        }
+      } catch (e) {
+        console.warn('Error removing hyperlink from copied card:', e);
+      }
+    }
+  }
+
+  return duplicatesProcessed;
 }
 
 // Track processed cards to avoid duplicate notifications
 const processedCards = new Set<string>();
 
+// Flag to suppress duplicate notifications during import
+let isImporting = false;
+
 /**
  * Checks for duplicate cards and marks copies appropriately.
+ * Only logs when duplicates are actually found and processed.
  */
-function checkForDuplicates(): void {
-  handleCardDuplication();
+async function checkForDuplicates(): Promise<void> {
+  const duplicatesFound = await handleCardDuplication();
+  // Only log if duplicates were actually processed (for debugging)
+  // Removed verbose logging to reduce console spam
 }
 
-// Run duplicate check immediately on plugin load
+// Run duplicate check immediately on plugin load (silently)
 checkForDuplicates();
 
 // Listen for selection changes to detect when cards are duplicated
@@ -1832,6 +2442,7 @@ figma.on('selectionchange', () => {
 
 // Also check periodically to catch any missed duplicates (especially from copy/paste)
 // This ensures we catch duplicates even if selection doesn't change
+// Reduced frequency to avoid unnecessary checks
 setInterval(() => {
   checkForDuplicates();
 }, TIMING_CONFIG.DUPLICATE_CHECK_INTERVAL);
@@ -1849,3 +2460,16 @@ figma.showUI(__html__, {
   height: UI_CONFIG.HEIGHT,
   themeColors: true,
 });
+
+// Load and send saved Jira URL to UI
+(async () => {
+  try {
+    const savedUrl = await figma.clientStorage.getAsync('jiraBaseUrl');
+    figma.ui.postMessage({
+      type: 'jira-url-loaded',
+      jiraBaseUrl: savedUrl || undefined,
+    } as UIMessage);
+  } catch (error) {
+    console.error('Error loading Jira URL on startup:', error);
+  }
+})();

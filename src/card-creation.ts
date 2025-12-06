@@ -111,7 +111,8 @@ export async function createTemplateCardWithPosition(
   templateType: keyof typeof TEMPLATES,
   customData?: { [key: string]: string },
   x?: number,
-  y?: number
+  y?: number,
+  jiraBaseUrl?: string
 ): Promise<FrameNode> {
   validateTemplateType(templateType);
   validateCoordinate(x, 'x');
@@ -125,9 +126,16 @@ export async function createTemplateCardWithPosition(
   const cardY = y !== undefined ? y : viewport.y;
 
   const frame = figma.createFrame();
-  frame.name = (customData && customData.title) || template.title;
+  // Always use template.title (template type name) for frame.name to ensure
+  // imported cards can be found during export. The card title is stored in the
+  // first text node, not in the frame name.
+  frame.name = template.title;
   frame.x = cardX;
   frame.y = cardY;
+
+  // Store template type display name in plugin data for reliable identification during export
+  // This matches the frame.name and what we check against in extractCardData
+  frame.setPluginData('templateType', template.title);
 
   if (customData && customData.issueKey) {
     frame.setPluginData(
@@ -216,20 +224,34 @@ export async function createTemplateCardWithPosition(
   titleText.y = CARD_CONFIG.PADDING;
   titleText.resize(cardWidth - CARD_CONFIG.PADDING * 2, titleText.height);
 
+  frame.appendChild(titleText);
+
+  // Set hyperlink after text is added to frame (may be required by Figma API)
   const issueKey = customData && customData.issueKey;
-  if (issueKey && issueKey.trim() !== '') {
+  console.log(`Hyperlink check - issueKey: "${issueKey}", jiraBaseUrl: "${jiraBaseUrl}"`);
+  if (issueKey && issueKey.trim() !== '' && jiraBaseUrl && jiraBaseUrl.trim() !== '') {
     try {
-      const url = `https://myjira.com/browse/${issueKey.trim()}`;
+      // Ensure the base URL doesn't have a trailing slash
+      const baseUrl = jiraBaseUrl.trim().replace(/\/$/, '');
+      const url = `${baseUrl}/browse/${issueKey.trim()}`;
+      console.log(`Setting hyperlink for issue ${issueKey} with URL: ${url}`);
+      console.log(`Text length: ${titleText.characters.length}`);
       titleText.setRangeHyperlink(0, titleText.characters.length, {
         type: 'URL',
         value: url,
       });
+      console.log(`Hyperlink set successfully for ${issueKey}`);
     } catch (e) {
-      console.warn('Could not set hyperlink on title:', e);
+      console.error('Could not set hyperlink on title:', e);
+      // Don't throw - continue with card creation even if hyperlink fails
+    }
+  } else {
+    if (issueKey && issueKey.trim() !== '') {
+      console.log(`Issue key ${issueKey} found but no valid Jira Base URL provided (jiraBaseUrl: "${jiraBaseUrl}")`);
+    } else if (jiraBaseUrl && jiraBaseUrl.trim() !== '') {
+      console.log(`Jira Base URL provided but no issue key found (issueKey: "${issueKey}")`);
     }
   }
-
-  frame.appendChild(titleText);
   const titleHeight = titleText.height;
 
   let fieldsToShow: Array<{ label: string; value: string }> = [...template.fields];

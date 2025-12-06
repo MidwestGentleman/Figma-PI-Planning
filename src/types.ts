@@ -7,9 +7,14 @@ import { TEMPLATES } from './templates';
  */
 export type PluginMessage =
   | { type: 'insert-template'; templateType: keyof typeof TEMPLATES }
-  | { type: 'import-csv'; csvText: string }
-  | { type: 'export-csv' }
+  | { type: 'import-csv'; csvText: string; jiraBaseUrl?: string }
+  | { type: 'export-csv'; filterNew?: boolean }
+  | { type: 'get-jira-url' }
+  | { type: 'set-jira-url'; jiraBaseUrl: string }
   | { type: 'close' };
+
+export type UIMessage =
+  | { type: 'jira-url-loaded'; jiraBaseUrl?: string };
 
 /**
  * Template type definition
