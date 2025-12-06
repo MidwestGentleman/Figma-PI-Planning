@@ -1,0 +1,75 @@
+/**
+ * Configuration constants for the PI Planning plugin
+ * Organized by functional area for maintainability
+ */
+
+export const CARD_CONFIG = {
+  WIDTH: 500,
+  DEFAULT_HEIGHT: 400,
+  PADDING: 20,
+  ICON_SIZE: 32,
+  BORDER_RADIUS: 8,
+  TITLE_FONT_SIZE: 24,
+  FIELD_FONT_SIZE: 14,
+  LABEL_FONT_SIZE: 12,
+  TITLE_WRAP_LENGTH: 40,
+  BACKGROUND_OPACITY: 0.15,
+} as const;
+
+export const LAYOUT_CONFIG = {
+  CARDS_PER_COLUMN: 3,
+  CARD_SPACING: 50,
+  SPRINT_SPACING: 100,
+  SPRINT_LABEL_FONT_SIZE: 48,
+  SPRINT_DATES_FONT_SIZE: 14,
+  SPRINT_LABEL_Y_OFFSET: -80,
+  SPRINT_TABLE_SPACING: 20,
+  SPRINT_LINE_SPACING: 15,
+  SPRINT_AFTER_LINE_SPACING: 25,
+} as const;
+
+export const TABLE_CONFIG = {
+  ROW_HEIGHT: 28,
+  HEADER_SPACING: 10,
+  COLUMN_SPACING: 20,
+  HEADER_FONT_SIZE: 18,
+  DATA_FONT_SIZE: 16,
+  FIRST_COLUMN_WIDTH: 100,
+} as const;
+
+export const UI_CONFIG = {
+  WIDTH: 300,
+  HEIGHT: 500,
+} as const;
+
+export const TIMING_CONFIG = {
+  DUPLICATE_CHECK_DELAY: 300,
+  DUPLICATE_CHECK_INTERVAL: 1500,
+  PROGRESS_NOTIFICATION_TIMEOUT: 500,
+  PROGRESS_UPDATE_PERCENTAGE: 10,
+} as const;
+
+export const COLOR_CONFIG = {
+  FIGJAM_BORDER: { r: 0.6, g: 0.6, b: 0.6, opacity: 0.8 },
+  FIGMA_BORDER: { r: 0.8, g: 0.8, b: 0.8 },
+  BORDER_WEIGHT: 2,
+  TEXT_DARK: { r: 0.2, g: 0.2, b: 0.2 },
+  TEXT_LIGHT: { r: 1, g: 1, b: 1 },
+  TEXT_SECONDARY: { r: 0.4, g: 0.4, b: 0.4 },
+  TEXT_LABEL_LIGHT: { r: 0.9, g: 0.9, b: 0.9 },
+  TEXT_LABEL_DARK: { r: 0.4, g: 0.4, b: 0.4 },
+  TEXT_VALUE_DARK: { r: 0.1, g: 0.1, b: 0.1 },
+  TABLE_TEXT: { r: 0, g: 0, b: 0 },
+} as const;
+
+export const VALIDATION_CONFIG = {
+  MAX_CSV_SIZE: 10 * 1024 * 1024, // 10MB
+  MAX_FIELD_LENGTH: 10000,
+  MAX_COORDINATE: 1000000,
+  MIN_COORDINATE: -1000000,
+} as const;
+
+export const IMPORT_CONFIG = {
+  BATCH_SIZE: 10, // Process 10 cards at a time
+} as const;
+
