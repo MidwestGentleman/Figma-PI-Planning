@@ -1307,7 +1307,7 @@ async function importCardsFromCSV(
         }
 
         // Filter out the epic issue from the list of issues to process (if it was included)
-        const issuesToProcess = epicColumnIssues.filter(
+        let issuesToProcess = epicColumnIssues.filter(
           (issue: { [key: string]: string }) => {
             const issueType = (issue['Issue Type'] || '').trim().toLowerCase();
             const issueKey = issue['Issue key'] || '';
@@ -1322,6 +1322,33 @@ async function importCardsFromCSV(
             return true;
           }
         );
+
+        // Sort issues by story points (highest to lowest)
+        issuesToProcess.sort((a, b) => {
+          const getStoryPoints = (issue: {
+            [key: string]: string;
+          }): number | null => {
+            const storyPointsStr = issue['Custom field (Story Points)'] || '';
+            if (
+              !storyPointsStr ||
+              storyPointsStr.trim() === '' ||
+              storyPointsStr.trim() === '?'
+            ) {
+              return null; // No story points
+            }
+            return parseStoryPoints(storyPointsStr);
+          };
+
+          const pointsA = getStoryPoints(a);
+          const pointsB = getStoryPoints(b);
+
+          // Sort highest to lowest (descending order)
+          // Items without story points go to the end
+          if (pointsA === null && pointsB === null) return 0; // Both have no points, maintain order
+          if (pointsA === null) return 1; // A has no points, put it after B
+          if (pointsB === null) return -1; // B has no points, put it after A
+          return pointsB - pointsA; // Descending order (highest first)
+        });
 
         // Process issues in batches to prevent UI blocking
         for (

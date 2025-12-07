@@ -276,7 +276,9 @@ Ready to publish your plugin to the Figma Community? See the deployment document
 See [QUICK_START_DEPLOYMENT.md](./QUICK_START_DEPLOYMENT.md) for details.
 
 
-
+Enhancment:
+support sprint timelines from multiple teams.
+Space out sprints a little bit
 
 ## License
 
