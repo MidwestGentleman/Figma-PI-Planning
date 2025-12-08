@@ -104,6 +104,25 @@ export function sanitizeFieldValue(
 }
 
 /**
+ * Truncates assignee names: if longer than 36 characters and contains '@',
+ * shows only the part before the '@' sign.
+ */
+export function truncateAssignee(assignee: string): string {
+  if (!assignee || typeof assignee !== 'string') {
+    return assignee || '';
+  }
+
+  // If assignee is longer than 36 characters and contains '@'
+  if (assignee.length > 36 && assignee.includes('@')) {
+    const atIndex = assignee.indexOf('@');
+    const beforeAt = assignee.substring(0, atIndex);
+    return beforeAt;
+  }
+
+  return assignee;
+}
+
+/**
  * Determines which field should be displayed as a large number for a given template type.
  */
 export function getLargeNumberField(

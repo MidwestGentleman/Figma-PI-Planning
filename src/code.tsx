@@ -34,6 +34,7 @@ import {
   wrapTitleText,
   getErrorMessage,
   yieldToUI,
+  truncateAssignee,
 } from './utils';
 import {
   createTemplateCard,
@@ -1109,7 +1110,8 @@ async function createCapacityTable(
 
     // Assignee column (second)
     const assigneeText = figma.createText();
-    assigneeText.characters = assignee;
+    // Truncate assignee if it's an email longer than 25 characters
+    assigneeText.characters = truncateAssignee(assignee);
     assigneeText.fontSize = dataFontSize;
     assigneeText.fills = [{ type: 'SOLID', color: COLOR_CONFIG.TABLE_TEXT }];
     assigneeText.x = x + TABLE_CONFIG.FIRST_COLUMN_WIDTH + columnSpacing; // Second column
@@ -1293,7 +1295,8 @@ async function processTeamSprintTickets(
   epicIssues: Array<{ [key: string]: string }>,
   epicToFirstSprintKey: { [epicKey: string]: string },
   createdFrames: FrameNode[],
-  jiraBaseUrl?: string
+  jiraBaseUrl?: string,
+  updateLastCardBottom?: (bottom: number) => void
 ): Promise<{ maxY: number; columnsUsed: number }> {
   const spacing = LAYOUT_CONFIG.CARD_SPACING;
   const cardWidth = CARD_CONFIG.WIDTH;
@@ -1423,6 +1426,11 @@ async function processTeamSprintTickets(
             currentY = Math.max(currentY, startY + epicHeights[epicKey]);
             // Store reference to epic card for potential resizing
             epicLabelFrames[epicKey] = frame;
+            // Track epic card bottom for vertical line calculation
+            const epicCardBottom = y + frame.height;
+            if (updateLastCardBottom) {
+              updateLastCardBottom(epicCardBottom);
+            }
           }
         } else {
           // Place simplified epic label in subsequent sprints (all sprints with tickets)
@@ -1444,6 +1452,11 @@ async function processTeamSprintTickets(
           currentY = Math.max(currentY, startY + epicHeights[epicKey]);
           // Store reference to epic label for potential resizing
           epicLabelFrames[epicKey] = labelFrame;
+          // Track epic label bottom for vertical line calculation
+          const epicLabelBottom = y + labelFrame.height;
+          if (updateLastCardBottom) {
+            updateLastCardBottom(epicLabelBottom);
+          }
         }
       } catch (error) {
         console.error('Error creating epic card/label:', error);
@@ -1571,7 +1584,14 @@ async function processTeamSprintTickets(
           createdFrames.push(frame);
           epicHeights[epicKey] += frame.height + spacing;
           epicCardCounts[epicKey] += 1; // Increment card count
-          currentY = Math.max(currentY, startY + epicHeights[epicKey]);
+          // Track the actual bottom of the card (y + height), not including spacing after
+          const cardBottom = y + frame.height;
+          currentY = Math.max(currentY, cardBottom);
+
+          // Update the last card bottom tracker if provided
+          if (updateLastCardBottom) {
+            updateLastCardBottom(cardBottom);
+          }
         } catch (error) {
           console.error('Error creating card:', error);
         }
@@ -1584,8 +1604,115 @@ async function processTeamSprintTickets(
       // Calculate total width to span all columns used by this epic
       const totalColumnsForThisEpic = 1 + epicOffsets[epicKey];
       const newWidth = totalColumnsForThisEpic * columnWidth - spacing;
-      // Resize the epic label to span all columns, keeping the same height
-      epicLabelFrame.resize(newWidth, epicLabelFrame.height);
+      const oldWidth = epicLabelFrame.width;
+      const originalHeight = epicLabelFrame.height; // Store original height
+
+      // Resize the epic label frame to span all columns, keeping the same height
+      epicLabelFrame.resize(newWidth, originalHeight);
+
+      // Update child elements to fill the new width
+      const padding = CARD_CONFIG.PADDING;
+      const iconSize = CARD_CONFIG.ICON_SIZE;
+
+      // Find and update elements:
+      // 1. Title text (first text node at top, left-aligned) - expand width
+      // 2. Icon (shape/vector/frame/group at top right) - right-justify
+      // 3. Priority rank (large number at bottom right) - right-justify
+      // 4. Status (text at bottom left) - stays at left
+      // 5. Field value text nodes (for full epic cards) - expand width
+
+      // Track which elements we've found
+      let titleTextFound = false;
+      let iconFound = false;
+      const iconRightEdge = newWidth - padding;
+
+      for (const child of epicLabelFrame.children) {
+        if (child.type === 'TEXT') {
+          const textNode = child as TextNode;
+          // Title is typically the first text node at the top (y = padding)
+          if (!titleTextFound && textNode.y === padding) {
+            // Title text - expand to fill new width (accounting for icon on right)
+            // Calculation: newWidth - left padding - icon size - right padding
+            const titleMaxWidth = newWidth - padding - iconSize - padding;
+
+            // Get the original unwrapped text (remove newlines that were added by wrapTitleText)
+            const originalText = textNode.characters.replace(/\n/g, ' ');
+
+            // Store original title height for comparison
+            const originalTitleHeight = textNode.height;
+
+            // Remove newlines and update text - this allows the text to flow naturally at new width
+            textNode.characters = originalText;
+
+            // Resize to new width - Figma will automatically wrap text based on the width
+            // We need to set a height that's large enough, then let it auto-adjust
+            // Use a large initial height, then resize based on actual content
+            textNode.resize(titleMaxWidth, 1000); // Large height to allow wrapping
+            // Now resize to actual height (Figma calculates this automatically)
+            const newTitleHeight = textNode.height;
+
+            // Adjust frame height if title height changed
+            if (Math.abs(newTitleHeight - originalTitleHeight) > 1) {
+              const heightDiff = newTitleHeight - originalTitleHeight;
+              const newFrameHeight = originalHeight + heightDiff;
+              epicLabelFrame.resize(newWidth, newFrameHeight);
+            } else {
+              // Keep original frame dimensions
+              epicLabelFrame.resize(newWidth, originalHeight);
+            }
+            titleTextFound = true;
+          } else {
+            // Check if this is a field value text (for full epic cards)
+            // Field values are resized to cardWidth - PADDING * 2, so check if width matches old width
+            if (Math.abs(textNode.width - (oldWidth - padding * 2)) < 5) {
+              // This is likely a field value text - expand to new width
+              // Store original height to prevent auto-growth
+              const originalTextHeight = textNode.height;
+              textNode.resize(newWidth - padding * 2, originalTextHeight);
+              // Ensure frame height doesn't change (Figma might auto-resize)
+              if (epicLabelFrame.height !== originalHeight) {
+                epicLabelFrame.resize(newWidth, originalHeight);
+              }
+            } else {
+              // Bottom text (status or priority) - check x position to identify
+              // Status is at left (x = padding), priority is at right
+              if (textNode.x === padding) {
+                // Status - stays at left, no change needed
+              } else {
+                // Priority rank - always right-justify to new width
+                // Identify by: not at left (x !== padding) and at bottom (y > padding + some threshold)
+                // For epic labels, priority is always at bottom right
+                textNode.x = iconRightEdge - textNode.width;
+              }
+            }
+          }
+        } else if (
+          child.type === 'VECTOR' ||
+          child.type === 'ELLIPSE' ||
+          child.type === 'RECTANGLE' ||
+          child.type === 'POLYGON' ||
+          child.type === 'STAR' ||
+          child.type === 'LINE'
+        ) {
+          // Icon shape - right-justify to new width
+          if (!iconFound && child.y === padding) {
+            child.x = iconRightEdge - iconSize;
+            iconFound = true;
+          }
+        } else if (child.type === 'FRAME' || child.type === 'GROUP') {
+          // Icon might be in a frame or group - check if it's at the top right
+          // Icon is typically at y = padding and x near the right edge
+          if (!iconFound && child.y === padding && child.x > oldWidth * 0.7) {
+            child.x = iconRightEdge - iconSize;
+            iconFound = true;
+          }
+        }
+      }
+
+      // Final check: ensure frame height hasn't changed (Figma might auto-resize)
+      if (epicLabelFrame.height !== originalHeight) {
+        epicLabelFrame.resize(newWidth, originalHeight);
+      }
     }
 
     // Update cumulative X offset for next epic (base column + all rollover columns)
@@ -1799,25 +1926,7 @@ async function importCardsFromCSV(
     const backlogColumnWidth =
       Math.max(6, maxBacklogColumns) * columnWidth - spacing;
 
-    // Create vertical line for backlog column (will be updated later with correct height)
-    // Backlog labels are created per team below
-    let sprintXOffset = 0;
-    const backlogVerticalLine = figma.createLine();
-    backlogVerticalLine.x = viewport.x + sprintXOffset;
-    backlogVerticalLine.y = fixedSprintLabelY - 100;
-    backlogVerticalLine.resize(0, 20000); // Very long vertical line (will be updated later)
-    backlogVerticalLine.strokes = [
-      { type: 'SOLID', color: COLOR_CONFIG.TEXT_SECONDARY },
-    ];
-    backlogVerticalLine.strokeWeight = COLOR_CONFIG.BORDER_WEIGHT;
-    backlogVerticalLine.strokeAlign = 'CENTER';
-    backlogVerticalLine.opacity = 1;
-    figma.currentPage.appendChild(backlogVerticalLine);
-    createdFrames.push(backlogVerticalLine as any);
-
-    sprintXOffset += backlogColumnWidth + sprintSpacing;
-
-    // Calculate sprint column positions (for vertical lines and separators)
+    // Calculate sprint column positions (for vertical boxes and separators)
     // We'll create sprint labels per team below
     let totalSprintWidth = 0;
     for (const sprintKey of sprintKeys) {
@@ -1830,29 +1939,29 @@ async function importCardsFromCSV(
     // Calculate total width for separator (backlog + all sprints)
     const totalWidth = backlogColumnWidth + sprintSpacing + totalSprintWidth;
 
-    // Create vertical lines for each sprint column (once, spanning all teams)
-    // These will be positioned at the start of each sprint column
-    let sprintVerticalLineX = viewport.x + backlogColumnWidth + sprintSpacing;
-    const sprintVerticalLines: LineNode[] = [];
-    for (const sprintKey of sprintKeys) {
+    // Store X positions for vertical boxes at midpoints between columns
+    // (will be created after all teams are processed)
+    // Backlog box: midpoint between backlog end and first sprint start
+    const backlogVerticalBoxX =
+      viewport.x + backlogColumnWidth + sprintSpacing / 2;
+
+    // Sprint boxes: midpoints between each sprint column
+    const sprintVerticalBoxPositions: number[] = [];
+    let currentSprintX = viewport.x + backlogColumnWidth + sprintSpacing;
+    for (let i = 0; i < sprintKeys.length; i++) {
+      const sprintKey = sprintKeys[i];
       const sprintColumnWidth =
         sprintColumnWidths[sprintKey] * columnWidth - spacing;
 
-      const sprintVerticalLine = figma.createLine();
-      sprintVerticalLine.x = sprintVerticalLineX;
-      sprintVerticalLine.y = fixedSprintLabelY - 100; // Start well above labels
-      sprintVerticalLine.resize(0, 20000); // Very long vertical line (will span all teams)
-      sprintVerticalLine.strokes = [
-        { type: 'SOLID', color: COLOR_CONFIG.TEXT_SECONDARY },
-      ];
-      sprintVerticalLine.strokeWeight = COLOR_CONFIG.BORDER_WEIGHT;
-      sprintVerticalLine.strokeAlign = 'CENTER';
-      sprintVerticalLine.opacity = 1;
-      figma.currentPage.appendChild(sprintVerticalLine);
-      createdFrames.push(sprintVerticalLine as any);
-      sprintVerticalLines.push(sprintVerticalLine);
+      // If not the last sprint, calculate midpoint to next sprint
+      if (i < sprintKeys.length - 1) {
+        const nextSprintStart =
+          currentSprintX + sprintColumnWidth + sprintSpacing;
+        const midpoint = currentSprintX + sprintColumnWidth + sprintSpacing / 2;
+        sprintVerticalBoxPositions.push(midpoint);
+      }
 
-      sprintVerticalLineX += sprintColumnWidth + sprintSpacing;
+      currentSprintX += sprintColumnWidth + sprintSpacing;
     }
 
     // Process each team (horizontal swimlanes)
@@ -1862,19 +1971,26 @@ async function importCardsFromCSV(
     const spacingAfterLine = LAYOUT_CONFIG.SPRINT_AFTER_LINE_SPACING;
     const spacingBetweenTableAndLabel = LAYOUT_CONFIG.SPRINT_TABLE_SPACING;
 
-    // Track the maximum Y position across all teams (for vertical line height)
-    let maxTeamY = 0;
+    // Track the actual bottom of the last card across all teams (for vertical box height)
+    // This will be updated as each card is created
+    let lastCardBottom = 0;
     // Track actual columns used per sprint to update widths dynamically
     const actualSprintColumns: { [sprintKey: string]: number } = {};
+    // Track where cards actually start (for vertical box start position)
+    let firstTeamCardsStartY: number | null = null;
 
     for (let teamIndex = 0; teamIndex < teams.length; teamIndex++) {
       const team = teams[teamIndex];
-      let teamMaxY = teamYOffset;
+      // Track this team's last card bottom - will be initialized when we know cards start position
+      let teamLastCardBottom = 0;
+      // Track the maximum capacity table height for this team (across all sprints)
+      // This is needed to add spacing so cards don't overlap with the next team's table
+      let teamMaxCapacityTableHeight = 0;
       const teamSprintLabelY =
         teamYOffset + LAYOUT_CONFIG.SPRINT_LABEL_Y_OFFSET;
 
       // Process backlog for this team (at the beginning)
-      sprintXOffset = 0;
+      let sprintXOffset = 0;
       const backlogIssues = issuesByTeamAndBacklog[team] || [];
 
       // Filter out epics from backlog if they exist in sprints
@@ -1947,6 +2063,17 @@ async function importCardsFromCSV(
       // This matches the sprint cardsStartY calculation
       const backlogCardsStartY = backlogLineY + spacingAfterLine;
 
+      // Track the first team's cards start position for vertical box positioning
+      if (firstTeamCardsStartY === null) {
+        firstTeamCardsStartY = backlogCardsStartY;
+      }
+
+      // Initialize teamLastCardBottom to backlog cards start position
+      // This ensures proper positioning even if there are no cards
+      if (teamLastCardBottom === 0) {
+        teamLastCardBottom = backlogCardsStartY;
+      }
+
       if (filteredBacklogIssues.length > 0) {
         const backlogResult = await processTeamSprintTickets(
           team,
@@ -1958,12 +2085,15 @@ async function importCardsFromCSV(
           epicIssues,
           epicToFirstSprintKey,
           createdFrames,
-          jiraBaseUrl
+          jiraBaseUrl,
+          (bottom: number) => {
+            lastCardBottom = Math.max(lastCardBottom, bottom);
+            teamLastCardBottom = Math.max(teamLastCardBottom, bottom);
+          }
         );
-        teamMaxY = Math.max(teamMaxY, backlogResult.maxY);
       } else {
-        // Even if no issues, update maxY to account for labels
-        teamMaxY = Math.max(teamMaxY, backlogCardsStartY);
+        // Even if no backlog issues, ensure teamLastCardBottom is at least at the cards start position
+        teamLastCardBottom = Math.max(teamLastCardBottom, backlogCardsStartY);
       }
       sprintXOffset += backlogColumnWidth + sprintSpacing;
 
@@ -1996,6 +2126,11 @@ async function importCardsFromCSV(
         let capacityTableHeight = 0;
         if (teamSprintIssues.length > 0 && Object.keys(capacity).length > 0) {
           capacityTableHeight = calculateTableHeight(capacity);
+          // Track the maximum table height for this team (needed for spacing)
+          teamMaxCapacityTableHeight = Math.max(
+            teamMaxCapacityTableHeight,
+            capacityTableHeight
+          );
 
           // Create the table at the correct position (growing upward from label position)
           const tableX = viewport.x + sprintXOffset;
@@ -2101,6 +2236,11 @@ async function importCardsFromCSV(
         // Calculate starting Y position for cards (after the line with spacing)
         const cardsStartY = lineY + spacingAfterLine;
 
+        // Track the first team's cards start position for vertical box positioning
+        if (firstTeamCardsStartY === null) {
+          firstTeamCardsStartY = cardsStartY;
+        }
+
         if (teamSprintIssues.length > 0) {
           const result = await processTeamSprintTickets(
             team,
@@ -2112,41 +2252,71 @@ async function importCardsFromCSV(
             epicIssues,
             epicToFirstSprintKey,
             createdFrames,
-            jiraBaseUrl
+            jiraBaseUrl,
+            (bottom: number) => {
+              lastCardBottom = Math.max(lastCardBottom, bottom);
+              teamLastCardBottom = Math.max(teamLastCardBottom, bottom);
+            }
           );
-          teamMaxY = Math.max(teamMaxY, result.maxY);
           // Track actual columns used (take max across teams)
           actualSprintColumns[sprintKey] = Math.max(
             actualSprintColumns[sprintKey] || 0,
             result.columnsUsed
           );
         } else {
-          // Even if no issues, update maxY to account for labels
-          teamMaxY = Math.max(teamMaxY, cardsStartY);
+          // Even if no sprint issues, ensure teamLastCardBottom is at least at the cards start position
+          teamLastCardBottom = Math.max(teamLastCardBottom, cardsStartY);
         }
 
         sprintXOffset += sprintColumnWidth + sprintSpacing;
       }
 
-      // Move to next team position (with spacing, but no separator line)
+      // Move to next team position (calculate based on last processed cards)
+      // Move to next team position (calculate based on this team's last card bottom)
       if (teamIndex < teams.length - 1) {
-        teamYOffset = teamMaxY + teamSpacing;
-      } else {
-        teamYOffset = teamMaxY;
+        // Position next team below this team's last card with spacing
+        // Also add space for the capacity table so cards don't overlap with the next team's table
+        // The table extends upward from the label, so we need to account for its height
+        const capacityTableSpacing =
+          teamMaxCapacityTableHeight > 0
+            ? teamMaxCapacityTableHeight + spacingBetweenTableAndLabel + 20 // Extra spacing for safety
+            : 0;
+        teamYOffset = teamLastCardBottom + teamSpacing + capacityTableSpacing;
       }
-
-      // Track maximum Y position for vertical line height
-      maxTeamY = Math.max(maxTeamY, teamMaxY);
     }
 
-    // Update vertical line heights to span from top to bottom of all teams
-    const verticalLineStartY = fixedSprintLabelY - 100;
-    const verticalLineHeight = maxTeamY - verticalLineStartY + 100;
-    for (const verticalLine of sprintVerticalLines) {
-      verticalLine.resize(0, verticalLineHeight);
+    // Create vertical boxes (skinny rectangles) after all teams are processed
+    // Use the actual bottom of the last card that was created
+    const verticalBoxStartY = firstTeamCardsStartY || fixedSprintLabelY;
+    // Stop at the actual bottom of the last card (lastCardBottom tracks this exactly)
+    const verticalBoxHeight = lastCardBottom - verticalBoxStartY;
+    const verticalBoxWidth = COLOR_CONFIG.BORDER_WEIGHT; // Use border weight as width for skinny boxes
+
+    // Create backlog vertical box
+    const backlogVerticalBox = figma.createRectangle();
+    backlogVerticalBox.x = backlogVerticalBoxX;
+    backlogVerticalBox.y = verticalBoxStartY;
+    backlogVerticalBox.resize(verticalBoxWidth, verticalBoxHeight);
+    backlogVerticalBox.fills = [
+      { type: 'SOLID', color: COLOR_CONFIG.TEXT_SECONDARY },
+    ];
+    backlogVerticalBox.strokes = [];
+    figma.currentPage.appendChild(backlogVerticalBox);
+    createdFrames.push(backlogVerticalBox as any);
+
+    // Create sprint vertical boxes
+    for (const boxX of sprintVerticalBoxPositions) {
+      const sprintVerticalBox = figma.createRectangle();
+      sprintVerticalBox.x = boxX;
+      sprintVerticalBox.y = verticalBoxStartY;
+      sprintVerticalBox.resize(verticalBoxWidth, verticalBoxHeight);
+      sprintVerticalBox.fills = [
+        { type: 'SOLID', color: COLOR_CONFIG.TEXT_SECONDARY },
+      ];
+      sprintVerticalBox.strokes = [];
+      figma.currentPage.appendChild(sprintVerticalBox);
+      createdFrames.push(sprintVerticalBox as any);
     }
-    // Update backlog vertical line height as well
-    backlogVerticalLine.resize(0, verticalLineHeight);
 
     // Count total created cards
     totalCreated = createdFrames.filter((frame) => {

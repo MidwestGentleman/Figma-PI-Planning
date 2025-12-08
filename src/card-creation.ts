@@ -16,6 +16,7 @@ import {
   hasAssigneeField,
   hasStatusField,
   wrapTitleText,
+  truncateAssignee,
 } from './utils';
 
 /**
@@ -31,36 +32,22 @@ function createIconShape(
   const iconSize = CARD_CONFIG.ICON_SIZE;
   let iconShape: SceneNode;
 
-  // Bug icon: X shape in light red
+  // Bug icon: Simple X text in light red
   if (isBug) {
-    // Create an X shape using two rotated rectangles in a frame
-    const bugFrame = figma.createFrame();
-    bugFrame.resize(iconSize, iconSize);
-    bugFrame.x = iconX;
-    bugFrame.y = iconY;
-    bugFrame.fills = [];
-    
-    // First diagonal line (top-left to bottom-right)
-    const line1 = figma.createRectangle();
-    const lineWidth = iconSize * 0.15;
-    const lineLength = iconSize * 1.2;
-    line1.resize(lineWidth, lineLength);
-    line1.fills = [{ type: 'SOLID', color: { r: 0.9, g: 0.4, b: 0.4 } }];
-    line1.rotation = 45;
-    line1.x = iconSize / 2 - lineWidth / 2;
-    line1.y = iconSize / 2 - lineLength / 2;
-    
-    // Second diagonal line (top-right to bottom-left)
-    const line2 = figma.createRectangle();
-    line2.resize(lineWidth, lineLength);
-    line2.fills = [{ type: 'SOLID', color: { r: 0.9, g: 0.4, b: 0.4 } }];
-    line2.rotation = -45;
-    line2.x = iconSize / 2 - lineWidth / 2;
-    line2.y = iconSize / 2 - lineLength / 2;
-    
-    bugFrame.appendChild(line1);
-    bugFrame.appendChild(line2);
-    iconShape = bugFrame;
+    const bugText = figma.createText();
+    bugText.characters = 'X';
+    bugText.fontSize = iconSize * 0.75; // Slightly smaller to fit nicely
+    try {
+      bugText.fontName = { family: 'Inter', style: 'Bold' };
+    } catch (e) {
+      // Fallback if font not available
+    }
+    bugText.fills = [{ type: 'SOLID', color: { r: 0.9, g: 0.4, b: 0.4 } }];
+    // Center the X within the icon space (same position as other icons)
+    // Position is calculated after text is created to get accurate dimensions
+    bugText.x = iconX + (iconSize - bugText.width) / 2;
+    bugText.y = iconY + (iconSize - bugText.height) / 2;
+    iconShape = bugText;
   } else if (templateType === 'theme') {
     const rect = figma.createRectangle();
     rect.resize(iconSize * 1.5, iconSize * 0.6);
@@ -233,10 +220,8 @@ export async function createEpicLabelCard(
 
   const titleText = figma.createText();
   const titleContent = sanitizeFieldValue(title);
-  titleText.characters = wrapTitleText(
-    titleContent,
-    CARD_CONFIG.TITLE_WRAP_LENGTH
-  );
+  // Don't pre-wrap - let Figma handle wrapping based on actual width
+  titleText.characters = titleContent;
   titleText.fontSize = CARD_CONFIG.TITLE_FONT_SIZE;
   try {
     titleText.fontName = { family: 'Inter', style: 'Bold' };
@@ -251,10 +236,16 @@ export async function createEpicLabelCard(
   ];
   titleText.x = CARD_CONFIG.PADDING;
   titleText.y = CARD_CONFIG.PADDING;
-  titleText.resize(cardWidth - CARD_CONFIG.PADDING * 2, titleText.height);
-
+  // Ensure title doesn't overlap icon: cardWidth - left padding - icon size - right padding - spacing
+  const iconSpace = CARD_CONFIG.ICON_SIZE + CARD_CONFIG.PADDING; // icon + spacing
+  const maxTitleWidth = cardWidth - CARD_CONFIG.PADDING - iconSpace;
+  
   frame.appendChild(titleText);
-
+  
+  // Set width with large initial height to allow wrapping
+  // We'll read the actual height after Figma wraps the text
+  titleText.resize(maxTitleWidth, 2000);
+  
   // Set hyperlink after text is added to frame (may be required by Figma API)
   // Set hyperlink if issue key and Jira URL are provided
   const epicIssueKey = issueKey;
@@ -283,7 +274,33 @@ export async function createEpicLabelCard(
     }
   }
 
-  const titleHeight = titleText.height;
+  // Calculate title height using accurate word-wrapping algorithm
+  // Figma's height property may not accurately reflect wrapped content
+  // So we calculate it ourselves based on actual word wrapping
+  const lineHeight = CARD_CONFIG.TITLE_FONT_SIZE * 1.2; // Standard line height
+  const avgCharWidth = CARD_CONFIG.TITLE_FONT_SIZE * 0.55; // Average char width for Bold Inter
+  
+  // Word-wrap the text manually to get accurate line count
+  const words = titleContent.split(/\s+/);
+  let currentLine = '';
+  let lineCount = 1;
+  
+  for (const word of words) {
+    const testLine = currentLine ? `${currentLine} ${word}` : word;
+    const testWidth = testLine.length * avgCharWidth;
+    
+    if (testWidth > maxTitleWidth && currentLine) {
+      lineCount++;
+      currentLine = word;
+    } else {
+      currentLine = testLine;
+    }
+  }
+  
+  const titleHeight = lineCount * lineHeight;
+  // Set the calculated height to ensure accurate spacing
+  titleText.resize(maxTitleWidth, titleHeight);
+  
   const bottomPadding = CARD_CONFIG.PADDING;
   const bottomY = titleHeight + CARD_CONFIG.PADDING + bottomPadding;
 
@@ -456,10 +473,8 @@ export async function createTemplateCardWithPosition(
   const titleContent = sanitizeFieldValue(
     (customData && customData.title) || template.title
   );
-  titleText.characters = wrapTitleText(
-    titleContent,
-    CARD_CONFIG.TITLE_WRAP_LENGTH
-  );
+  // Don't pre-wrap - let Figma handle wrapping based on actual width
+  titleText.characters = titleContent;
   titleText.fontSize = CARD_CONFIG.TITLE_FONT_SIZE;
   try {
     titleText.fontName = { family: 'Inter', style: 'Bold' };
@@ -474,9 +489,15 @@ export async function createTemplateCardWithPosition(
   ];
   titleText.x = CARD_CONFIG.PADDING;
   titleText.y = CARD_CONFIG.PADDING;
-  titleText.resize(cardWidth - CARD_CONFIG.PADDING * 2, titleText.height);
-
+  // Ensure title doesn't overlap icon: cardWidth - left padding - icon size - right padding - spacing
+  const iconSpace = CARD_CONFIG.ICON_SIZE + CARD_CONFIG.PADDING; // icon + spacing
+  const maxTitleWidth = cardWidth - CARD_CONFIG.PADDING - iconSpace;
+  
   frame.appendChild(titleText);
+  
+  // Set width with large initial height to allow wrapping
+  // We'll read the actual height after Figma wraps the text
+  titleText.resize(maxTitleWidth, 2000);
 
   // Set hyperlink after text is added to frame (may be required by Figma API)
   const issueKey = customData && customData.issueKey;
@@ -504,7 +525,33 @@ export async function createTemplateCardWithPosition(
       console.log(`Jira Base URL provided but no issue key found (issueKey: "${issueKey}")`);
     }
   }
-  const titleHeight = titleText.height;
+  
+  // Calculate title height using accurate word-wrapping algorithm
+  // Figma's height property may not accurately reflect wrapped content
+  // So we calculate it ourselves based on actual word wrapping
+  const lineHeight = CARD_CONFIG.TITLE_FONT_SIZE * 1.2; // Standard line height
+  const avgCharWidth = CARD_CONFIG.TITLE_FONT_SIZE * 0.55; // Average char width for Bold Inter
+  
+  // Word-wrap the text manually to get accurate line count
+  const words = titleContent.split(/\s+/);
+  let currentLine = '';
+  let lineCount = 1;
+  
+  for (const word of words) {
+    const testLine = currentLine ? `${currentLine} ${word}` : word;
+    const testWidth = testLine.length * avgCharWidth;
+    
+    if (testWidth > maxTitleWidth && currentLine) {
+      lineCount++;
+      currentLine = word;
+    } else {
+      currentLine = testLine;
+    }
+  }
+  
+  const titleHeight = lineCount * lineHeight;
+  // Set the calculated height to ensure accurate spacing
+  titleText.resize(maxTitleWidth, titleHeight);
 
   let fieldsToShow: Array<{ label: string; value: string }> = [...template.fields];
   if (templateType === 'userStory') {
@@ -626,7 +673,9 @@ export async function createTemplateCardWithPosition(
 
     if (assigneeValue) {
       const assigneeText = figma.createText();
-      assigneeText.characters = sanitizeFieldValue(assigneeValue);
+      // Truncate assignee if it's an email longer than 25 characters
+      const truncatedAssignee = truncateAssignee(assigneeValue);
+      assigneeText.characters = sanitizeFieldValue(truncatedAssignee);
       assigneeText.fontSize = CARD_CONFIG.TITLE_FONT_SIZE;
       try {
         assigneeText.fontName = { family: 'Inter', style: 'Bold' };
