@@ -943,10 +943,40 @@ function preprocessMultiTeamData(issues: Array<{ [key: string]: string }>): {
     return sprintA - sprintB;
   });
 
+  // Add 6 future sprints for PI planning purposes
+  // Calculate the next 6 sprints after the last sprint in the data
+  const futureSprintKeys: string[] = [];
+  if (sprintKeys.length > 0) {
+    const lastSprintKey = sprintKeys[sprintKeys.length - 1];
+    const [lastYear, lastSprintNumber] = lastSprintKey.split('-').map(Number);
+
+    // Calculate the next 6 sprints
+    for (let i = 1; i <= 6; i++) {
+      let nextYear = lastYear;
+      let nextSprintNumber = lastSprintNumber + i;
+
+      // Handle year rollover (sprints go up to 25, then roll to next year)
+      if (nextSprintNumber > 25) {
+        nextYear = lastYear + 1;
+        nextSprintNumber = nextSprintNumber - 25;
+      }
+
+      const futureSprintKey = `${nextYear}-${nextSprintNumber}`;
+      futureSprintKeys.push(futureSprintKey);
+      sprintKeys.push(futureSprintKey);
+    }
+  }
+
   // Calculate sprint column widths (accounting for epics that span multiple columns)
   const sprintColumnWidths: { [sprintKey: string]: number } = {};
   const MAX_CARDS_PER_COLUMN = 5; // Match the constant used in processTeamSprintTickets
   for (const sprintKey of sprintKeys) {
+    // Future sprints are always 6 columns wide for PI planning
+    if (futureSprintKeys.includes(sprintKey)) {
+      sprintColumnWidths[sprintKey] = 6;
+      continue;
+    }
+
     let maxColumns = 0;
     for (const team of teamSet) {
       const teamSprintIssues =
