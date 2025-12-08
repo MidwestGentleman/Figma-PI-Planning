@@ -620,6 +620,65 @@ function getSprintDates(issue: { [key: string]: string }): string {
 }
 
 /**
+ * Checks if a string is a numeric team ID (like "1.0", "2.0", "1039") rather than a team name.
+ * Team names should contain letters, not just numbers.
+ * @param value - The string to check
+ * @returns true if the value looks like a numeric ID, false if it looks like a team name
+ */
+function isNumericTeamID(value: string): boolean {
+  if (!value || value.trim() === '') {
+    return false;
+  }
+  const trimmed = value.trim();
+  // Check if it's purely numeric (e.g., "1039", "1040")
+  // or a version-like number (e.g., "1.0", "2.0", "3.0")
+  // Pattern matches: pure numbers, or numbers with optional decimal point and digits
+  const numericPattern = /^\d+(\.\d+)?$/;
+  return numericPattern.test(trimmed);
+}
+
+/**
+ * Parses a sprint name to extract team, year, and sprint number.
+ * Expected format: "{Team Name} {Year}-{Sprint Number}"
+ * Returns null if the format doesn't match (e.g., "Backlog" or invalid format)
+ * Rejects sprint names where the team part is purely numeric (like "1.0 2025-20")
+ */
+function parseSprintName(sprintName: string): {
+  team: string;
+  year: number;
+  sprintNumber: number;
+  sprintKey: string; // "{Year}-{Sprint Number}" for grouping concurrent sprints
+} | null {
+  if (!sprintName || sprintName.trim() === '' || sprintName === 'Backlog') {
+    return null;
+  }
+
+  // Pattern: "{Team Name} {Year}-{Sprint Number}"
+  // Examples: "Triton 2025-25", "Crush 2025-25", "GH 2025-24"
+  const match = sprintName.trim().match(/^(.+?)\s+(\d{4})-(\d+)$/);
+  if (!match) {
+    return null; // Doesn't match the expected format
+  }
+
+  const team = match[1].trim();
+  // Reject if team name is purely numeric (e.g., "1.0", "2.0", "1039")
+  // These are team IDs, not team names
+  if (isNumericTeamID(team)) {
+    return null; // Invalid: team part is numeric, not a team name
+  }
+
+  const year = parseInt(match[2], 10);
+  const sprintNumber = parseInt(match[3], 10);
+  const sprintKey = `${year}-${sprintNumber}`;
+
+  if (isNaN(year) || isNaN(sprintNumber)) {
+    return null;
+  }
+
+  return { team, year, sprintNumber, sprintKey };
+}
+
+/**
  * Groups issues by sprint name.
  */
 function groupIssuesBySprint(issues: Array<{ [key: string]: string }>): {
@@ -638,6 +697,198 @@ function groupIssuesBySprint(issues: Array<{ [key: string]: string }>): {
     issuesBySprint[sprint].push(issue);
   }
   return issuesBySprint;
+}
+
+/**
+ * Preprocesses issues for multi-team swimlane layout.
+ * Returns organized data structure for creating swimlanes.
+ */
+function preprocessMultiTeamData(issues: Array<{ [key: string]: string }>): {
+  teams: string[];
+  sprintKeys: string[]; // Sorted list of "{Year}-{Sprint Number}" keys
+  issuesByTeamAndSprint: {
+    [team: string]: {
+      [sprintKey: string]: Array<{ [key: string]: string }>;
+    };
+  };
+  issuesByTeamAndBacklog: {
+    [team: string]: Array<{ [key: string]: string }>;
+  };
+  sprintColumnWidths: { [sprintKey: string]: number }; // Max epics per sprint across all teams
+  epicIssues: Array<{ [key: string]: string }>;
+} {
+  // Collect all sprints and parse them
+  const sprintMap = new Map<string, ReturnType<typeof parseSprintName>>();
+  const teamSet = new Set<string>();
+  const issuesByTeamAndSprint: {
+    [team: string]: {
+      [sprintKey: string]: Array<{ [key: string]: string }>;
+    };
+  } = {};
+  const issuesByTeamAndBacklog: {
+    [team: string]: Array<{ [key: string]: string }>;
+  } = {};
+  const epicIssues: Array<{ [key: string]: string }> = [];
+
+  // First pass: parse sprints and identify teams
+  for (const issue of issues) {
+    if (!issue['Summary'] || issue['Summary'].trim() === '') {
+      continue;
+    }
+
+    const issueType = (issue['Issue Type'] || '').trim().toLowerCase();
+    if (issueType === 'epic') {
+      epicIssues.push(issue);
+    }
+
+    const sprintName = getSprintValue(issue);
+    const parsed = parseSprintName(sprintName);
+
+    // If sprint parses correctly, add it to sprintMap (regardless of team source)
+    if (parsed) {
+      sprintMap.set(sprintName, parsed);
+    }
+
+    // Get team with priority: Custom field (Studio) > Custom field (Team) > Sprint name
+    // Custom field (Studio) typically contains the written team name (e.g., "Triton", "Gadget Hackwrench")
+    // Custom field (Team) may contain an ID (e.g., "1039", "1040") or a name - validate it's not numeric
+    let team = '';
+    // First priority: Custom field (Studio) - written team name
+    if (
+      issue['Custom field (Studio)'] &&
+      issue['Custom field (Studio)'].trim() !== ''
+    ) {
+      team = issue['Custom field (Studio)'].trim();
+    }
+    // Second priority: Custom field (Team) - may be ID or name
+    // Only use it if it looks like a team name (not a numeric ID like "1.0", "2.0", "1039")
+    else if (
+      issue['Custom field (Team)'] &&
+      issue['Custom field (Team)'].trim() !== ''
+    ) {
+      const teamFieldValue = issue['Custom field (Team)'].trim();
+      // Only use Custom field (Team) if it's not a numeric ID
+      if (!isNumericTeamID(teamFieldValue)) {
+        team = teamFieldValue;
+      }
+    }
+    // Third priority: Extract from sprint name (only if parsed successfully and team is valid)
+    if (!team && parsed && !isNumericTeamID(parsed.team)) {
+      team = parsed.team;
+    }
+    // Fallback: Unknown
+    if (!team) {
+      team = 'Unknown';
+    }
+
+    if (team && team.trim() !== '') {
+      teamSet.add(team.trim());
+      const teamKey = team.trim();
+
+      if (!issuesByTeamAndSprint[teamKey]) {
+        issuesByTeamAndSprint[teamKey] = {};
+      }
+      if (!issuesByTeamAndBacklog[teamKey]) {
+        issuesByTeamAndBacklog[teamKey] = [];
+      }
+
+      if (parsed) {
+        const sprintKey = parsed.sprintKey;
+        if (!issuesByTeamAndSprint[teamKey][sprintKey]) {
+          issuesByTeamAndSprint[teamKey][sprintKey] = [];
+        }
+        issuesByTeamAndSprint[teamKey][sprintKey].push(issue);
+      } else {
+        // Backlog or invalid sprint
+        issuesByTeamAndBacklog[teamKey].push(issue);
+      }
+    }
+  }
+
+  // Collect all unique sprint keys and sort them
+  // Only include sprint keys that have at least one issue with a valid team (not "Unknown" or numeric IDs)
+  const sprintKeySet = new Set<string>();
+  for (const teamKey of teamSet) {
+    // Skip "Unknown" team and numeric team IDs - don't create sprints for issues without valid teams
+    if (
+      teamKey === 'Unknown' ||
+      teamKey.trim() === '' ||
+      isNumericTeamID(teamKey)
+    ) {
+      continue;
+    }
+
+    const teamSprints = issuesByTeamAndSprint[teamKey];
+    if (teamSprints) {
+      for (const sprintKey of Object.keys(teamSprints)) {
+        sprintKeySet.add(sprintKey);
+      }
+    }
+  }
+
+  const sprintKeys = Array.from(sprintKeySet).sort((a, b) => {
+    // Sort by year first, then sprint number
+    const [yearA, sprintA] = a.split('-').map(Number);
+    const [yearB, sprintB] = b.split('-').map(Number);
+    if (yearA !== yearB) {
+      return yearA - yearB;
+    }
+    return sprintA - sprintB;
+  });
+
+  // Calculate sprint column widths (accounting for epics that span multiple columns)
+  const sprintColumnWidths: { [sprintKey: string]: number } = {};
+  const MAX_CARDS_PER_COLUMN = 5; // Match the constant used in processTeamSprintTickets
+  for (const sprintKey of sprintKeys) {
+    let maxColumns = 0;
+    for (const team of teamSet) {
+      const teamSprintIssues =
+        (issuesByTeamAndSprint[team] &&
+          issuesByTeamAndSprint[team][sprintKey]) ||
+        [];
+      // Group by epic and count columns needed (epics with >5 tickets need multiple columns)
+      const epicTicketCounts: { [epicKey: string]: number } = {};
+      for (const issue of teamSprintIssues) {
+        const epicLink =
+          issue['Custom field (Epic Link)'] ||
+          issue['Epic Link'] ||
+          issue['Epic'] ||
+          '';
+        const epicKey = epicLink.trim() || 'No Epic';
+        epicTicketCounts[epicKey] = (epicTicketCounts[epicKey] || 0) + 1;
+      }
+      // Calculate total columns needed: each epic needs columns based on total items (epic card + tickets)
+      // Epic cards count toward the MAX_CARDS_PER_COLUMN limit, so we calculate: ceil((1 epic card + tickets) / MAX_CARDS_PER_COLUMN)
+      let totalColumns = 0;
+      for (const epicKey in epicTicketCounts) {
+        const ticketCount = epicTicketCounts[epicKey];
+        // Epic card (1) + tickets, all count toward the column limit
+        const totalItems = 1 + ticketCount;
+        const columnsForEpic = Math.ceil(totalItems / MAX_CARDS_PER_COLUMN);
+        totalColumns += columnsForEpic;
+      }
+      maxColumns = Math.max(maxColumns, totalColumns);
+    }
+    // Minimum 1 column
+    sprintColumnWidths[sprintKey] = Math.max(1, maxColumns);
+  }
+
+  // Filter out "Unknown" teams and numeric team IDs - only include teams that have valid names
+  const teams = Array.from(teamSet)
+    .filter(
+      (team) =>
+        team !== 'Unknown' && team.trim() !== '' && !isNumericTeamID(team)
+    )
+    .sort();
+
+  return {
+    teams,
+    sprintKeys,
+    issuesByTeamAndSprint,
+    issuesByTeamAndBacklog,
+    sprintColumnWidths,
+    epicIssues,
+  };
 }
 
 /**
@@ -805,7 +1056,7 @@ async function processIssueBatch(
   let created = 0;
   let skipped = 0;
   const endIndex = Math.min(startIndex + batchSize, issues.length);
-  const MAX_CARDS_PER_COLUMN = 15;
+  const MAX_CARDS_PER_COLUMN = 5;
 
   for (let i = startIndex; i < endIndex; i++) {
     const issue = issues[i];
@@ -922,8 +1173,333 @@ async function processIssueBatch(
 // yieldToUI is imported from utils.ts
 
 /**
+ * Processes tickets for a team in a specific sprint column, organized by epic.
+ * Returns an object with the maximum Y position reached and the actual number of columns used.
+ * Uses cumulative X offset like the original single-team implementation.
+ */
+async function processTeamSprintTickets(
+  team: string,
+  sprintKey: string,
+  issues: Array<{ [key: string]: string }>,
+  sprintX: number,
+  startY: number,
+  columnWidth: number,
+  epicIssues: Array<{ [key: string]: string }>,
+  epicToFirstSprintKey: { [epicKey: string]: string },
+  createdFrames: FrameNode[],
+  jiraBaseUrl?: string
+): Promise<{ maxY: number; columnsUsed: number }> {
+  const spacing = LAYOUT_CONFIG.CARD_SPACING;
+  const cardWidth = CARD_CONFIG.WIDTH;
+  const MAX_CARDS_PER_COLUMN = 5;
+
+  // Group issues by epic
+  const issuesByEpic: { [epicKey: string]: Array<{ [key: string]: string }> } =
+    {};
+  for (const issue of issues) {
+    const epicLink =
+      issue['Custom field (Epic Link)'] ||
+      issue['Epic Link'] ||
+      issue['Epic'] ||
+      '';
+    const epicKey = epicLink.trim() || 'No Epic';
+    if (!issuesByEpic[epicKey]) {
+      issuesByEpic[epicKey] = [];
+    }
+    issuesByEpic[epicKey].push(issue);
+  }
+
+  const sortedEpics = Object.keys(issuesByEpic).sort();
+  let currentY = startY;
+
+  // Track heights, card counts, and offsets for each epic (for rollover columns)
+  const epicHeights: { [epicKey: string]: number } = {};
+  const epicCardCounts: { [epicKey: string]: number } = {};
+  const epicOffsets: { [epicKey: string]: number } = {};
+  // Track epic label/card frames so we can resize them if they span multiple columns
+  const epicLabelFrames: { [epicKey: string]: FrameNode } = {};
+  // Track epic card/label height separately so cards in wrapped columns align properly
+  const epicCardHeights: { [epicKey: string]: number } = {};
+  for (const epicKey of sortedEpics) {
+    epicHeights[epicKey] = 0;
+    epicCardCounts[epicKey] = 0;
+    epicOffsets[epicKey] = 0;
+    epicCardHeights[epicKey] = 0;
+  }
+
+  // Track cumulative X offset for positioning epics (accounts for rollover columns)
+  let cumulativeXOffset = 0;
+
+  // Process each epic column
+  for (let epicIndex = 0; epicIndex < sortedEpics.length; epicIndex++) {
+    const epicKey = sortedEpics[epicIndex];
+    const epicColumnIssues = issuesByEpic[epicKey];
+
+    // Calculate X position for this epic column (accounting for previous epics' rollover columns)
+    const baseEpicX = sprintX + cumulativeXOffset;
+    let currentEpicX = baseEpicX;
+
+    // Find epic card to place (if any)
+    let epicCardToPlace: { [key: string]: string } | null = null;
+    let isFirstSprintForEpic = false;
+    if (epicKey !== 'No Epic') {
+      // Find the epic issue from all epic issues in the CSV
+      for (const epic of epicIssues) {
+        const epicIssueKey = epic['Issue key'] || '';
+        if (epicIssueKey.trim() === epicKey.trim()) {
+          epicCardToPlace = epic;
+          break;
+        }
+      }
+
+      // Check if this is the first sprint for this epic
+      if (epicCardToPlace) {
+        const epicIssueKey = epicCardToPlace['Issue key'] || '';
+        const firstSprintKey = epicToFirstSprintKey[epicIssueKey];
+        isFirstSprintForEpic = firstSprintKey === sprintKey;
+      }
+    }
+
+    // Place epic card/label if needed
+    // Full epic card appears in the first sprint, simplified labels in all sprints with tickets
+    if (epicCardToPlace && epicColumnIssues.length > 0) {
+      try {
+        const epicIssueKey = epicCardToPlace['Issue key'] || '';
+        const epicTitle = epicCardToPlace['Summary'] || 'Epic';
+        const epicStatus = epicCardToPlace['Status'] || 'Open';
+        const epicPriorityRank =
+          epicCardToPlace['Priority'] ||
+          epicCardToPlace['Custom field (Priority Rank)'] ||
+          '#';
+
+        if (isFirstSprintForEpic) {
+          const mapped = mapJiraIssueToTemplate(epicCardToPlace);
+          if (mapped && mapped.templateType === 'epic') {
+            const y = startY + epicHeights[epicKey];
+            const frame = await createTemplateCardWithPosition(
+              mapped.templateType,
+              mapped.data,
+              currentEpicX,
+              y,
+              jiraBaseUrl
+            );
+
+            const issueSprint = getSprintValue(epicCardToPlace);
+            if (
+              issueSprint &&
+              issueSprint.trim() !== '' &&
+              issueSprint !== 'Backlog'
+            ) {
+              frame.setPluginData('sprint', issueSprint);
+            }
+            if (epicIssueKey && epicIssueKey.trim() !== '') {
+              frame.setPluginData('epicLink', epicIssueKey.trim());
+            }
+
+            const issueTeam =
+              epicCardToPlace['Custom field (Studio)'] ||
+              epicCardToPlace['Custom field (Team)'] ||
+              '';
+            if (issueTeam && issueTeam.trim() !== '') {
+              frame.setPluginData('team', issueTeam.trim());
+            }
+
+            const originalDescription = epicCardToPlace['Description'] || '';
+            if (originalDescription && originalDescription.trim() !== '') {
+              const formattedDescription = formatJiraText(originalDescription);
+              frame.setPluginData('fullDescription', formattedDescription);
+            }
+
+            createdFrames.push(frame);
+            epicCardHeights[epicKey] = frame.height + spacing; // Store epic card height separately
+            epicHeights[epicKey] += frame.height + spacing;
+            epicCardCounts[epicKey] += 1;
+            currentY = Math.max(currentY, startY + epicHeights[epicKey]);
+            // Store reference to epic card for potential resizing
+            epicLabelFrames[epicKey] = frame;
+          }
+        } else {
+          // Place simplified epic label in subsequent sprints (all sprints with tickets)
+          const y = startY + epicHeights[epicKey];
+          const labelFrame = await createEpicLabelCard(
+            epicTitle,
+            epicStatus,
+            epicPriorityRank,
+            epicIssueKey,
+            currentEpicX,
+            y,
+            jiraBaseUrl
+          );
+
+          createdFrames.push(labelFrame);
+          epicCardHeights[epicKey] = labelFrame.height + spacing; // Store epic label height separately
+          epicHeights[epicKey] += labelFrame.height + spacing;
+          // Don't count label cards toward the 15-card limit
+          currentY = Math.max(currentY, startY + epicHeights[epicKey]);
+          // Store reference to epic label for potential resizing
+          epicLabelFrames[epicKey] = labelFrame;
+        }
+      } catch (error) {
+        console.error('Error creating epic card/label:', error);
+      }
+    }
+
+    // Filter out the epic issue from the list of issues to process (if it was included)
+    let issuesToProcess = epicColumnIssues.filter(
+      (issue: { [key: string]: string }) => {
+        const issueType = (issue['Issue Type'] || '').trim().toLowerCase();
+        const issueKey = issue['Issue key'] || '';
+        // Exclude the epic issue itself if it matches the epic key
+        if (
+          epicCardToPlace &&
+          issueType === 'epic' &&
+          issueKey.trim() === epicKey.trim()
+        ) {
+          return false; // Skip the epic issue, it's already placed
+        }
+        return true;
+      }
+    );
+
+    // Sort by story points (highest to lowest)
+    issuesToProcess.sort((a, b) => {
+      const getStoryPoints = (issue: {
+        [key: string]: string;
+      }): number | null => {
+        const storyPointsStr = issue['Custom field (Story Points)'] || '';
+        if (
+          !storyPointsStr ||
+          storyPointsStr.trim() === '' ||
+          storyPointsStr.trim() === '?'
+        ) {
+          return null;
+        }
+        return parseStoryPoints(storyPointsStr);
+      };
+
+      const pointsA = getStoryPoints(a);
+      const pointsB = getStoryPoints(b);
+
+      if (pointsA === null && pointsB === null) return 0;
+      if (pointsA === null) return 1;
+      if (pointsB === null) return -1;
+      return pointsB - pointsA;
+    });
+
+    // Process tickets in batches
+    const BATCH_SIZE = 10;
+    for (
+      let batchStart = 0;
+      batchStart < issuesToProcess.length;
+      batchStart += BATCH_SIZE
+    ) {
+      const batchEnd = Math.min(
+        batchStart + BATCH_SIZE,
+        issuesToProcess.length
+      );
+      const batch = issuesToProcess.slice(batchStart, batchEnd);
+
+      for (const issue of batch) {
+        // Check if we need to roll over to a new column (5 card limit)
+        if (epicCardCounts[epicKey] >= MAX_CARDS_PER_COLUMN) {
+          // Reset height and card count for new column, increment column offset
+          // Cards in wrapped columns should align with cards in first column (after epic card)
+          epicHeights[epicKey] = epicCardHeights[epicKey]; // Start after epic card height
+          epicCardCounts[epicKey] = 0;
+          epicOffsets[epicKey] += 1;
+        }
+
+        // Calculate X position for current column (accounting for rollover)
+        const currentX = baseEpicX + epicOffsets[epicKey] * columnWidth;
+        const mapped = mapJiraIssueToTemplate(issue);
+        if (!mapped) continue;
+
+        try {
+          const y = startY + epicHeights[epicKey];
+          const frame = await createTemplateCardWithPosition(
+            mapped.templateType,
+            mapped.data,
+            currentX,
+            y,
+            jiraBaseUrl
+          );
+
+          const issueSprint = getSprintValue(issue);
+          if (
+            issueSprint &&
+            issueSprint.trim() !== '' &&
+            issueSprint !== 'Backlog'
+          ) {
+            frame.setPluginData('sprint', issueSprint);
+          }
+
+          const issueEpicLink =
+            issue['Custom field (Epic Link)'] ||
+            issue['Epic Link'] ||
+            issue['Epic'] ||
+            '';
+          if (issueEpicLink && issueEpicLink.trim() !== '') {
+            frame.setPluginData('epicLink', issueEpicLink.trim());
+          }
+
+          const issueTeam =
+            issue['Custom field (Studio)'] ||
+            issue['Custom field (Team)'] ||
+            '';
+          if (issueTeam && issueTeam.trim() !== '') {
+            frame.setPluginData('team', issueTeam.trim());
+          }
+
+          if (
+            mapped.templateType === 'theme' ||
+            mapped.templateType === 'epic' ||
+            mapped.templateType === 'initiative'
+          ) {
+            const originalDescription = issue['Description'] || '';
+            if (originalDescription && originalDescription.trim() !== '') {
+              const formattedDescription = formatJiraText(originalDescription);
+              frame.setPluginData('fullDescription', formattedDescription);
+            }
+          }
+
+          createdFrames.push(frame);
+          epicHeights[epicKey] += frame.height + spacing;
+          epicCardCounts[epicKey] += 1; // Increment card count
+          currentY = Math.max(currentY, startY + epicHeights[epicKey]);
+        } catch (error) {
+          console.error('Error creating card:', error);
+        }
+      }
+    }
+
+    // Resize epic label/card if it spans multiple columns
+    if (epicLabelFrames[epicKey] && epicOffsets[epicKey] > 0) {
+      const epicLabelFrame = epicLabelFrames[epicKey];
+      // Calculate total width to span all columns used by this epic
+      const totalColumnsForThisEpic = 1 + epicOffsets[epicKey];
+      const newWidth = totalColumnsForThisEpic * columnWidth - spacing;
+      // Resize the epic label to span all columns, keeping the same height
+      epicLabelFrame.resize(newWidth, epicLabelFrame.height);
+    }
+
+    // Update cumulative X offset for next epic (base column + all rollover columns)
+    // Add 1 for base column, plus any rollover columns
+    const totalColumnsForThisEpic = 1 + epicOffsets[epicKey];
+    cumulativeXOffset += totalColumnsForThisEpic * columnWidth;
+  }
+
+  // Calculate total columns used (sum of all epic columns)
+  let totalColumnsUsed = 0;
+  for (const epicKey of sortedEpics) {
+    totalColumnsUsed += 1 + epicOffsets[epicKey];
+  }
+
+  return { maxY: currentY, columnsUsed: totalColumnsUsed };
+}
+
+/**
  * Imports cards from CSV text and creates them on the FigJam canvas.
- * Groups cards by sprint and epic, and creates capacity tables.
+ * Creates a multi-team swimlane layout where teams are rows and sprints are columns.
  * Uses batched processing for large imports to prevent UI blocking.
  * @param csvText - The CSV text to import
  * @param jiraBaseUrl - Optional Jira base URL for creating hyperlinks
@@ -970,7 +1546,10 @@ async function importCardsFromCSV(
 
   try {
     // Show initial progress
-    figma.notify(`📊 Processing ${issues.length} issues...`, { timeout: 2000 });
+    figma.notify(
+      `📊 Processing ${issues.length} issues... this may take a minute or two`,
+      { timeout: 2000 }
+    );
 
     try {
       await ensureFontsLoaded();
@@ -981,46 +1560,76 @@ async function importCardsFromCSV(
       return;
     }
 
-    const issuesBySprint = groupIssuesBySprint(issues);
-    const sortedSprints = Object.keys(issuesBySprint).sort();
+    // Preprocess data for multi-team swimlane layout
+    const preprocessed = preprocessMultiTeamData(issues);
+    const {
+      teams,
+      sprintKeys,
+      issuesByTeamAndSprint,
+      issuesByTeamAndBacklog,
+      sprintColumnWidths,
+      epicIssues,
+    } = preprocessed;
 
-    // Identify epic issues and determine which sprint each epic should appear in
-    // Epic should appear in the first sprint that has tickets linked to it
-    const epicIssues: Array<{ [key: string]: string }> = [];
-    const nonEpicIssues: Array<{ [key: string]: string }> = [];
+    console.log('Preprocessing results:');
+    console.log(`  Teams found: ${teams.length}`, teams);
+    console.log(`  Sprint keys found: ${sprintKeys.length}`, sprintKeys);
+    console.log(`  Epic issues: ${epicIssues.length}`);
+    console.log(
+      '  Issues by team and sprint:',
+      Object.keys(issuesByTeamAndSprint)
+    );
+    console.log(
+      '  Issues by team and backlog:',
+      Object.keys(issuesByTeamAndBacklog)
+    );
 
-    for (const issue of issues) {
-      const issueType = (issue['Issue Type'] || '').trim().toLowerCase();
-      if (issueType === 'epic') {
-        epicIssues.push(issue);
-      } else {
-        nonEpicIssues.push(issue);
-      }
+    if (teams.length === 0) {
+      figma.notify('❌ No teams found in CSV file');
+      console.error('No teams identified from sprint names or issue fields');
+      console.error('Sample issue for debugging:', issues[0]);
+      return;
     }
 
-    // Build a map: epic issue key -> first sprint that has tickets for it
-    const epicToFirstSprint: { [epicKey: string]: string } = {};
+    if (sprintKeys.length === 0) {
+      figma.notify('⚠️ No valid sprints found, using single-team layout');
+      console.error(
+        'No valid sprints found. Sample sprint values:',
+        issues.slice(0, 10).map((issue) => getSprintValue(issue))
+      );
+      // Fall back to original single-team logic if no valid sprints
+      // (Keep existing single-team code here for backward compatibility)
+      return;
+    }
 
+    // Build epic to first sprint key mapping
+    const epicToFirstSprintKey: { [epicKey: string]: string } = {};
     for (const epic of epicIssues) {
       const epicKey = epic['Issue key'] || '';
       if (!epicKey) continue;
 
-      // Find the first sprint (in sorted order) that has tickets linked to this epic
-      for (const sprint of sortedSprints) {
-        const sprintIssues = issuesBySprint[sprint];
-        const hasLinkedTickets = sprintIssues.some((issue) => {
-          const epicLink =
-            issue['Custom field (Epic Link)'] ||
-            issue['Epic Link'] ||
-            issue['Epic'] ||
-            '';
-          // Match epic link to epic issue key
-          return epicLink.trim() === epicKey.trim();
-        });
+      // Find the first sprint key (in sorted order) that has tickets linked to this epic
+      for (const sprintKey of sprintKeys) {
+        let hasLinkedTickets = false;
+        for (const team of teams) {
+          const teamSprintIssues =
+            (issuesByTeamAndSprint[team] &&
+              issuesByTeamAndSprint[team][sprintKey]) ||
+            [];
+          hasLinkedTickets = teamSprintIssues.some((issue) => {
+            const epicLink =
+              issue['Custom field (Epic Link)'] ||
+              issue['Epic Link'] ||
+              issue['Epic'] ||
+              '';
+            return epicLink.trim() === epicKey.trim();
+          });
+          if (hasLinkedTickets) break;
+        }
 
         if (hasLinkedTickets) {
-          epicToFirstSprint[epicKey] = sprint;
-          break; // Found first sprint, stop looking
+          epicToFirstSprintKey[epicKey] = sprintKey;
+          break;
         }
       }
     }
@@ -1029,428 +1638,409 @@ async function importCardsFromCSV(
     const cardWidth = CARD_CONFIG.WIDTH;
     const spacing = LAYOUT_CONFIG.CARD_SPACING;
     const sprintSpacing = LAYOUT_CONFIG.SPRINT_SPACING;
+    const columnWidth = cardWidth + spacing;
 
     let totalCreated = 0;
     let totalSkipped = 0;
     const createdFrames: FrameNode[] = [];
-    const totalIssues = issues.length;
-    let processedCount = 0;
-    const progressInterval = Math.max(
-      1,
-      Math.floor(totalIssues / TIMING_CONFIG.PROGRESS_UPDATE_PERCENTAGE)
-    );
 
-    // Batch size for processing - process 10 cards at a time, then yield
-    const BATCH_SIZE = 10;
+    // Create sprint column headers (vertical labels at top)
+    const fixedSprintLabelY = viewport.y + LAYOUT_CONFIG.SPRINT_LABEL_Y_OFFSET;
+    const sprintHeaderHeight = 100; // Space for sprint labels and dates
 
-    // Process each sprint
-    let sprintXOffset = 0; // X position for the current sprint
-    for (const sprint of sortedSprints) {
-      let sprintIssues = issuesBySprint[sprint];
-
-      // Filter out epic cards from backlog - they should only appear in their designated sprint
-      if (sprint === 'Backlog') {
-        sprintIssues = sprintIssues.filter((issue) => {
-          const issueType = (issue['Issue Type'] || '').trim().toLowerCase();
-          // If it's an epic, check if it has a designated sprint (epicToFirstSprint)
-          if (issueType === 'epic') {
-            const epicIssueKey = issue['Issue key'] || '';
-            // If this epic has a designated sprint (not backlog), exclude it from backlog
-            if (epicIssueKey && epicToFirstSprint[epicIssueKey]) {
-              return false; // Exclude epic from backlog if it has a designated sprint
-            }
+    // Calculate backlog column width based on actual columns needed (accounting for epics spanning multiple columns)
+    const MAX_CARDS_PER_COLUMN = 5; // Match the constant used in processTeamSprintTickets
+    let maxBacklogColumns = 0;
+    for (const team of teams) {
+      const backlogIssues = issuesByTeamAndBacklog[team] || [];
+      // Filter out epics from backlog if they exist in sprints (same logic as below)
+      const filteredBacklogIssues = backlogIssues.filter((issue) => {
+        const issueType = (issue['Issue Type'] || '').trim().toLowerCase();
+        if (issueType === 'epic') {
+          const epicIssueKey = issue['Issue key'] || '';
+          // If this epic has a designated sprint (not backlog), exclude it from backlog
+          if (epicIssueKey && epicToFirstSprintKey[epicIssueKey]) {
+            return false; // Exclude epic from backlog if it has a designated sprint
           }
-          return true; // Keep non-epic issues and epics without a designated sprint
-        });
-      }
+        }
+        return true; // Keep non-epic issues and epics without a designated sprint
+      });
 
-      // Group issues by Epic Link within this sprint
-      const issuesByEpic: { [epicLink: string]: typeof sprintIssues } = {};
-      for (const issue of sprintIssues) {
-        // Get Epic Link - check various possible field names
+      // Group by epic and count columns needed (epics with >5 tickets need multiple columns)
+      const epicTicketCounts: { [epicKey: string]: number } = {};
+      for (const issue of filteredBacklogIssues) {
         const epicLink =
           issue['Custom field (Epic Link)'] ||
           issue['Epic Link'] ||
           issue['Epic'] ||
           '';
-        const epicKey = epicLink.trim() || 'No Epic'; // Use "No Epic" for items without an epic
-
-        if (!issuesByEpic[epicKey]) {
-          issuesByEpic[epicKey] = [];
-        }
-        issuesByEpic[epicKey].push(issue);
+        const epicKey = epicLink.trim() || 'No Epic';
+        epicTicketCounts[epicKey] = (epicTicketCounts[epicKey] || 0) + 1;
       }
-
-      // Get sorted list of epics (for consistent ordering)
-      const sortedEpics = Object.keys(issuesByEpic).sort();
-      const numEpics = sortedEpics.length;
-      const numColumns = Math.max(numEpics, 3); // Minimum 3 columns, but can have more if more epics
-
-      // Calculate capacity per assignee for this sprint
-      const capacity = calculateCapacity(sprintIssues);
-
-      // Calculate sprint label width based on number of epic columns
-      // Note: This is a minimum width - actual width may be larger due to rollover columns
-      // We'll update this after processing all epics if needed
-      const columnWidth = cardWidth + spacing;
-      let sprintLabelWidth = numColumns * columnWidth - spacing; // Total width of all epic columns (minimum)
-      const fixedSprintLabelY =
-        viewport.y + LAYOUT_CONFIG.SPRINT_LABEL_Y_OFFSET; // Fixed Y position for sprint label
-      const spacingBetweenTableAndLabel = LAYOUT_CONFIG.SPRINT_TABLE_SPACING;
-
-      // Calculate table height first (if table exists) - use helper function
-      let capacityTableHeight = 0;
-      if (Object.keys(capacity).length > 0) {
-        capacityTableHeight = calculateTableHeight(capacity);
-
-        // Create the table at the correct position (growing upward from fixed label position)
-        const tableX = viewport.x + sprintXOffset;
-        const tableY =
-          fixedSprintLabelY - capacityTableHeight - spacingBetweenTableAndLabel;
-
-        const tableResult = await createCapacityTable(
-          capacity,
-          tableX,
-          tableY,
-          sprintLabelWidth
-        );
-
-        // Add all table nodes to createdFrames for scrolling
-        for (const node of tableResult.nodes) {
-          createdFrames.push(node as any);
-        }
+      // Calculate total columns needed: each epic needs columns based on total items (epic card + tickets)
+      // Epic cards count toward the MAX_CARDS_PER_COLUMN limit, so we calculate: ceil((1 epic card + tickets) / MAX_CARDS_PER_COLUMN)
+      let totalColumns = 0;
+      for (const epicKey in epicTicketCounts) {
+        const ticketCount = epicTicketCounts[epicKey];
+        // Epic card (1) + tickets, all count toward the column limit
+        const totalItems = 1 + ticketCount;
+        const columnsForEpic = Math.ceil(totalItems / MAX_CARDS_PER_COLUMN);
+        totalColumns += columnsForEpic;
       }
+      maxBacklogColumns = Math.max(maxBacklogColumns, totalColumns);
+    }
+    // Minimum 6 columns (as originally specified), but use actual needed columns if more
+    const backlogColumnWidth =
+      Math.max(6, maxBacklogColumns) * columnWidth - spacing;
 
-      // Create sprint label - large text spanning all epic columns
-      const sprintLabel = figma.createText();
-      sprintLabel.characters = sprint;
-      sprintLabel.fontSize = LAYOUT_CONFIG.SPRINT_LABEL_FONT_SIZE;
-      try {
-        sprintLabel.fontName = { family: 'Inter', style: 'Bold' };
-      } catch (e) {
-        console.warn('Could not set Bold font for sprint label, using default');
-      }
-      sprintLabel.fills = [{ type: 'SOLID', color: COLOR_CONFIG.TEXT_DARK }];
+    // Create vertical line for backlog column (will be updated later with correct height)
+    // Backlog labels are created per team below
+    let sprintXOffset = 0;
+    const backlogVerticalLine = figma.createLine();
+    backlogVerticalLine.x = viewport.x + sprintXOffset;
+    backlogVerticalLine.y = fixedSprintLabelY - 100;
+    backlogVerticalLine.resize(0, 20000); // Very long vertical line (will be updated later)
+    backlogVerticalLine.strokes = [
+      { type: 'SOLID', color: COLOR_CONFIG.TEXT_SECONDARY },
+    ];
+    backlogVerticalLine.strokeWeight = COLOR_CONFIG.BORDER_WEIGHT;
+    backlogVerticalLine.strokeAlign = 'CENTER';
+    backlogVerticalLine.opacity = 1;
+    figma.currentPage.appendChild(backlogVerticalLine);
+    createdFrames.push(backlogVerticalLine as any);
 
-      // Position label centered above all epic columns
-      sprintLabel.x =
-        viewport.x + sprintXOffset + (sprintLabelWidth - sprintLabel.width) / 2; // Center the label
-      sprintLabel.y = fixedSprintLabelY; // Fixed Y position - never changes
+    sprintXOffset += backlogColumnWidth + sprintSpacing;
 
-      figma.currentPage.appendChild(sprintLabel);
-      createdFrames.push(sprintLabel as any); // Add to frames for scrolling
+    // Calculate sprint column positions (for vertical lines and separators)
+    // We'll create sprint labels per team below
+    let totalSprintWidth = 0;
+    for (const sprintKey of sprintKeys) {
+      const sprintColumnWidth =
+        sprintColumnWidths[sprintKey] * columnWidth - spacing;
+      totalSprintWidth += sprintColumnWidth + sprintSpacing;
+    }
+    totalSprintWidth -= sprintSpacing; // Subtract last spacing
 
-      // Get sprint dates from the first issue in this sprint (if available)
-      const sprintDates =
-        sprintIssues.length > 0
-          ? getSprintDates(sprintIssues[0])
-          : 'MM/DD/YYYY - MM/DD/YYYY';
+    // Calculate total width for separator (backlog + all sprints)
+    const totalWidth = backlogColumnWidth + sprintSpacing + totalSprintWidth;
 
-      // Create sprint dates text - smaller font, positioned under the sprint label
-      const sprintDatesText = figma.createText();
-      sprintDatesText.characters = sprintDates;
-      sprintDatesText.fontSize = LAYOUT_CONFIG.SPRINT_DATES_FONT_SIZE;
-      sprintDatesText.fills = [
+    // Create vertical lines for each sprint column (once, spanning all teams)
+    // These will be positioned at the start of each sprint column
+    let sprintVerticalLineX = viewport.x + backlogColumnWidth + sprintSpacing;
+    const sprintVerticalLines: LineNode[] = [];
+    for (const sprintKey of sprintKeys) {
+      const sprintColumnWidth =
+        sprintColumnWidths[sprintKey] * columnWidth - spacing;
+
+      const sprintVerticalLine = figma.createLine();
+      sprintVerticalLine.x = sprintVerticalLineX;
+      sprintVerticalLine.y = fixedSprintLabelY - 100; // Start well above labels
+      sprintVerticalLine.resize(0, 20000); // Very long vertical line (will span all teams)
+      sprintVerticalLine.strokes = [
         { type: 'SOLID', color: COLOR_CONFIG.TEXT_SECONDARY },
       ];
+      sprintVerticalLine.strokeWeight = COLOR_CONFIG.BORDER_WEIGHT;
+      sprintVerticalLine.strokeAlign = 'CENTER';
+      sprintVerticalLine.opacity = 1;
+      figma.currentPage.appendChild(sprintVerticalLine);
+      createdFrames.push(sprintVerticalLine as any);
+      sprintVerticalLines.push(sprintVerticalLine);
 
-      // Position dates centered under the sprint label
-      sprintDatesText.x =
+      sprintVerticalLineX += sprintColumnWidth + sprintSpacing;
+    }
+
+    // Process each team (horizontal swimlanes)
+    // Each team gets its own sprint labels, dates, lines, and capacity charts
+    let teamYOffset = fixedSprintLabelY + sprintHeaderHeight;
+    const teamSpacing = 50; // Space between teams
+    const spacingAfterLine = LAYOUT_CONFIG.SPRINT_AFTER_LINE_SPACING;
+    const spacingBetweenTableAndLabel = LAYOUT_CONFIG.SPRINT_TABLE_SPACING;
+
+    // Track the maximum Y position across all teams (for vertical line height)
+    let maxTeamY = 0;
+    // Track actual columns used per sprint to update widths dynamically
+    const actualSprintColumns: { [sprintKey: string]: number } = {};
+
+    for (let teamIndex = 0; teamIndex < teams.length; teamIndex++) {
+      const team = teams[teamIndex];
+      let teamMaxY = teamYOffset;
+      const teamSprintLabelY =
+        teamYOffset + LAYOUT_CONFIG.SPRINT_LABEL_Y_OFFSET;
+
+      // Process backlog for this team (at the beginning)
+      sprintXOffset = 0;
+      const backlogIssues = issuesByTeamAndBacklog[team] || [];
+
+      // Filter out epics from backlog if they exist in sprints
+      const filteredBacklogIssues = backlogIssues.filter((issue) => {
+        const issueType = (issue['Issue Type'] || '').trim().toLowerCase();
+        if (issueType === 'epic') {
+          const epicIssueKey = issue['Issue key'] || '';
+          // If this epic has a designated sprint (not backlog), exclude it from backlog
+          if (epicIssueKey && epicToFirstSprintKey[epicIssueKey]) {
+            return false; // Exclude epic from backlog if it has a designated sprint
+          }
+        }
+        return true; // Keep non-epic issues and epics without a designated sprint
+      });
+
+      // Create backlog label for this team (similar to sprint labels)
+      const backlogLabel = figma.createText();
+      backlogLabel.characters = 'Backlog';
+      backlogLabel.fontSize = LAYOUT_CONFIG.SPRINT_LABEL_FONT_SIZE;
+      try {
+        backlogLabel.fontName = { family: 'Inter', style: 'Bold' };
+      } catch (e) {
+        console.warn(
+          'Could not set Bold font for backlog label, using default'
+        );
+      }
+      backlogLabel.fills = [{ type: 'SOLID', color: COLOR_CONFIG.TEXT_DARK }];
+
+      // Position label centered above backlog column
+      backlogLabel.x =
         viewport.x +
         sprintXOffset +
-        (sprintLabelWidth - sprintDatesText.width) / 2; // Center the dates
-      sprintDatesText.y = sprintLabel.y + sprintLabel.height + 5; // Position below label with small spacing
+        (backlogColumnWidth - backlogLabel.width) / 2;
+      backlogLabel.y = teamSprintLabelY;
+      figma.currentPage.appendChild(backlogLabel);
+      createdFrames.push(backlogLabel as any);
 
-      figma.currentPage.appendChild(sprintDatesText);
-      createdFrames.push(sprintDatesText as any); // Add to frames for scrolling
+      // Create a dummy dates text to calculate the same spacing as sprint labels
+      // This ensures the backlog line aligns with sprint lines
+      const dummyDatesText = figma.createText();
+      dummyDatesText.characters = 'MM/DD/YYYY - MM/DD/YYYY';
+      dummyDatesText.fontSize = LAYOUT_CONFIG.SPRINT_DATES_FONT_SIZE;
+      // Don't append to page, just use for height calculation
+      const datesTextHeight = dummyDatesText.height;
+      dummyDatesText.remove(); // Clean up
 
-      // Add a line under the sprint dates spanning all epic columns
-      const line = figma.createLine();
-      const lineY =
-        sprintDatesText.y +
-        sprintDatesText.height +
+      // Add a line under the backlog label (aligned with sprint lines)
+      // Match the sprint line calculation: label.y + label.height + 5 + dates.height + lineSpacing
+      const backlogLine = figma.createLine();
+      const backlogLineY =
+        backlogLabel.y +
+        backlogLabel.height +
+        5 + // Same spacing as sprint dates (5px)
+        datesTextHeight +
         LAYOUT_CONFIG.SPRINT_LINE_SPACING;
-      const lineStartX = viewport.x + sprintXOffset;
+      const backlogLineStartX = viewport.x + sprintXOffset;
 
-      line.x = lineStartX;
-      line.y = lineY;
-      line.resize(sprintLabelWidth, 0); // Horizontal line spanning all epic columns
-      line.strokes = [{ type: 'SOLID', color: COLOR_CONFIG.TEXT_SECONDARY }];
-      line.strokeWeight = COLOR_CONFIG.BORDER_WEIGHT;
+      backlogLine.x = backlogLineStartX;
+      backlogLine.y = backlogLineY;
+      backlogLine.resize(backlogColumnWidth, 0); // Horizontal line spanning backlog column
+      backlogLine.strokes = [
+        { type: 'SOLID', color: COLOR_CONFIG.TEXT_SECONDARY },
+      ];
+      backlogLine.strokeWeight = COLOR_CONFIG.BORDER_WEIGHT;
 
-      figma.currentPage.appendChild(line);
-      createdFrames.push(line as any); // Add to frames for scrolling
+      figma.currentPage.appendChild(backlogLine);
+      createdFrames.push(backlogLine as any);
 
-      // Store line reference for later width updates
-      let sprintLine: LineNode = line;
+      // Calculate starting Y position for backlog cards (after the line with spacing)
+      // This matches the sprint cardsStartY calculation
+      const backlogCardsStartY = backlogLineY + spacingAfterLine;
 
-      // Calculate starting Y position for cards (after the line with spacing)
-      const spacingAfterLine = LAYOUT_CONFIG.SPRINT_AFTER_LINE_SPACING;
-      const cardsStartY = lineY + spacingAfterLine;
-
-      // Track position for each column (epic columns + any empty columns to reach minimum of 3)
-      const epicColumnHeights: { [epicKey: string]: number } = {};
-      const epicColumnCardCounts: { [epicKey: string]: number } = {}; // Track card count per epic
-      const epicColumnOffsets: { [epicKey: string]: number } = {}; // Track column offset (for rollover)
-      for (const epicKey of sortedEpics) {
-        epicColumnHeights[epicKey] = 0;
-        epicColumnCardCounts[epicKey] = 0;
-        epicColumnOffsets[epicKey] = 0;
+      if (filteredBacklogIssues.length > 0) {
+        const backlogResult = await processTeamSprintTickets(
+          team,
+          'Backlog',
+          filteredBacklogIssues,
+          viewport.x + sprintXOffset,
+          backlogCardsStartY, // Align with sprint cards
+          columnWidth,
+          epicIssues,
+          epicToFirstSprintKey,
+          createdFrames,
+          jiraBaseUrl
+        );
+        teamMaxY = Math.max(teamMaxY, backlogResult.maxY);
+      } else {
+        // Even if no issues, update maxY to account for labels
+        teamMaxY = Math.max(teamMaxY, backlogCardsStartY);
       }
-      // Initialize heights for all columns (including empty ones if needed)
-      const columnHeights: number[] = new Array(numColumns).fill(0);
+      sprintXOffset += backlogColumnWidth + sprintSpacing;
 
-      // Track cumulative X offset for positioning epics (accounts for rollover columns)
-      let cumulativeXOffset = 0;
+      // Process each sprint column for this team
+      // Always process all sprints, even if team has no tickets in that sprint
+      for (const sprintKey of sprintKeys) {
+        const sprintColumnWidth =
+          sprintColumnWidths[sprintKey] * columnWidth - spacing;
+        const teamSprintIssues =
+          (issuesByTeamAndSprint[team] &&
+            issuesByTeamAndSprint[team][sprintKey]) ||
+          [];
 
-      // Process each epic column
-      for (let epicIndex = 0; epicIndex < sortedEpics.length; epicIndex++) {
-        const epicKey = sortedEpics[epicIndex];
-        const epicColumnIssues = issuesByEpic[epicKey];
+        // Use team name consistently for all sprints in this team row
+        // The team variable from preprocessing should already be the full team name
+        // (prioritizes Custom field (Studio) > Custom field (Team) > Sprint name)
+        // Special case: Gadget Hackwrench uses "GH" abbreviation in sprint labels
+        // Format: "{Team Name} {Sprint Key}" (e.g., "Triton 2025-25" or "GH 2025-25")
+        let teamLabel = team;
+        if (team === 'Gadget Hackwrench') {
+          teamLabel = 'GH';
+        }
+        const sprintName = `${teamLabel} ${sprintKey}`;
 
-        // Calculate X position for this epic column (accounting for previous epics' rollover columns)
-        const baseEpicX = viewport.x + sprintXOffset + cumulativeXOffset;
-        let currentEpicX = baseEpicX;
+        // Calculate capacity per assignee for this team's sprint
+        // Only show allocation table if there are tickets
+        const capacity = calculateCapacity(teamSprintIssues);
 
-        // Check if there's an epic issue that should be placed at the top of this column
-        // Full epic card appears in the first sprint, simplified labels in all sprints with tickets
-        let epicCardToPlace: { [key: string]: string } | null = null;
-        let isFirstSprintForEpic = false;
-        if (epicKey !== 'No Epic') {
-          // Find the epic issue from all epic issues in the CSV
-          // epicKey is the epic link value, which should match the epic's issue key
-          for (const epic of epicIssues) {
-            const epicIssueKey = epic['Issue key'] || '';
-            if (epicIssueKey.trim() === epicKey.trim()) {
-              epicCardToPlace = epic;
+        // Calculate table height first (if table exists and there are tickets)
+        let capacityTableHeight = 0;
+        if (teamSprintIssues.length > 0 && Object.keys(capacity).length > 0) {
+          capacityTableHeight = calculateTableHeight(capacity);
+
+          // Create the table at the correct position (growing upward from label position)
+          const tableX = viewport.x + sprintXOffset;
+          const tableY =
+            teamSprintLabelY -
+            capacityTableHeight -
+            spacingBetweenTableAndLabel;
+
+          const tableResult = await createCapacityTable(
+            capacity,
+            tableX,
+            tableY,
+            sprintColumnWidth
+          );
+
+          // Add all table nodes to createdFrames for scrolling
+          for (const node of tableResult.nodes) {
+            createdFrames.push(node as any);
+          }
+        }
+
+        // Create sprint label - large text spanning all epic columns
+        const sprintLabel = figma.createText();
+        sprintLabel.characters = sprintName;
+        sprintLabel.fontSize = LAYOUT_CONFIG.SPRINT_LABEL_FONT_SIZE;
+        try {
+          sprintLabel.fontName = { family: 'Inter', style: 'Bold' };
+        } catch (e) {
+          console.warn(
+            'Could not set Bold font for sprint label, using default'
+          );
+        }
+        sprintLabel.fills = [{ type: 'SOLID', color: COLOR_CONFIG.TEXT_DARK }];
+
+        // Position label centered above all epic columns
+        sprintLabel.x =
+          viewport.x +
+          sprintXOffset +
+          (sprintColumnWidth - sprintLabel.width) / 2;
+        sprintLabel.y = teamSprintLabelY;
+        figma.currentPage.appendChild(sprintLabel);
+        createdFrames.push(sprintLabel as any);
+
+        // Get sprint dates from the first issue in this sprint (if available)
+        // If no tickets, try to find dates from any issue with this sprint key across all teams
+        let sprintDates = 'MM/DD/YYYY - MM/DD/YYYY';
+        if (teamSprintIssues.length > 0) {
+          sprintDates = getSprintDates(teamSprintIssues[0]);
+        } else {
+          // Try to find dates from another team's sprint with the same sprint key
+          for (const otherTeam of teams) {
+            const otherTeamSprintIssues =
+              (issuesByTeamAndSprint[otherTeam] &&
+                issuesByTeamAndSprint[otherTeam][sprintKey]) ||
+              [];
+            if (otherTeamSprintIssues.length > 0) {
+              sprintDates = getSprintDates(otherTeamSprintIssues[0]);
               break;
             }
           }
-
-          // Check if this is the first sprint for this epic
-          if (epicCardToPlace) {
-            const epicIssueKey = epicCardToPlace['Issue key'] || '';
-            const firstSprintForEpic = epicToFirstSprint[epicIssueKey];
-            isFirstSprintForEpic = firstSprintForEpic === sprint;
-          }
         }
 
-        // Place epic card or label at the top of the column (if epic exists and has tickets in this sprint)
-        // Full epic card in first sprint, simplified labels in all sprints with tickets
-        if (epicCardToPlace && epicColumnIssues.length > 0) {
-          try {
-            const epicIssueKey = epicCardToPlace['Issue key'] || '';
-            const epicTitle = epicCardToPlace['Summary'] || 'Epic';
-            const epicStatus = epicCardToPlace['Status'] || 'Open';
-            const epicPriorityRank =
-              epicCardToPlace['Priority'] ||
-              epicCardToPlace['Custom field (Priority Rank)'] ||
-              '#';
+        // Create sprint dates text - smaller font, positioned under the sprint label
+        const sprintDatesText = figma.createText();
+        sprintDatesText.characters = sprintDates;
+        sprintDatesText.fontSize = LAYOUT_CONFIG.SPRINT_DATES_FONT_SIZE;
+        sprintDatesText.fills = [
+          { type: 'SOLID', color: COLOR_CONFIG.TEXT_SECONDARY },
+        ];
 
-            if (isFirstSprintForEpic) {
-              // Place full epic card in the first sprint
-              const mapped = mapJiraIssueToTemplate(epicCardToPlace);
-              if (mapped && mapped.templateType === 'epic') {
-                const y = cardsStartY + epicColumnHeights[epicKey];
-                const frame = await createTemplateCardWithPosition(
-                  mapped.templateType,
-                  mapped.data,
-                  currentEpicX,
-                  y,
-                  jiraBaseUrl
-                );
+        // Position dates centered under the sprint label
+        sprintDatesText.x =
+          viewport.x +
+          sprintXOffset +
+          (sprintColumnWidth - sprintDatesText.width) / 2;
+        sprintDatesText.y = sprintLabel.y + sprintLabel.height + 5;
 
-                // Store sprint and epic link
-                const issueSprint = sprint || getSprintValue(epicCardToPlace);
-                if (
-                  issueSprint &&
-                  issueSprint.trim() !== '' &&
-                  issueSprint !== 'Backlog'
-                ) {
-                  frame.setPluginData('sprint', issueSprint);
-                }
+        figma.currentPage.appendChild(sprintDatesText);
+        createdFrames.push(sprintDatesText as any);
 
-                if (epicIssueKey && epicIssueKey.trim() !== '') {
-                  frame.setPluginData('epicLink', epicIssueKey.trim());
-                }
+        // Add a line under the sprint dates spanning all epic columns
+        const line = figma.createLine();
+        const lineY =
+          sprintDatesText.y +
+          sprintDatesText.height +
+          LAYOUT_CONFIG.SPRINT_LINE_SPACING;
+        const lineStartX = viewport.x + sprintXOffset;
 
-                // Store team/studio if available
-                const issueTeam =
-                  epicCardToPlace['Custom field (Studio)'] ||
-                  epicCardToPlace['Custom field (Team)'] ||
-                  '';
-                if (issueTeam && issueTeam.trim() !== '') {
-                  frame.setPluginData('team', issueTeam.trim());
-                }
+        line.x = lineStartX;
+        line.y = lineY;
+        line.resize(sprintColumnWidth, 0); // Horizontal line spanning all epic columns
+        line.strokes = [{ type: 'SOLID', color: COLOR_CONFIG.TEXT_SECONDARY }];
+        line.strokeWeight = COLOR_CONFIG.BORDER_WEIGHT;
 
-                // Store full description
-                const originalDescription =
-                  epicCardToPlace['Description'] || '';
-                if (originalDescription && originalDescription.trim() !== '') {
-                  const formattedDescription =
-                    formatJiraText(originalDescription);
-                  frame.setPluginData('fullDescription', formattedDescription);
-                }
+        figma.currentPage.appendChild(line);
+        createdFrames.push(line as any);
 
-                createdFrames.push(frame);
-                epicColumnHeights[epicKey] += frame.height + spacing;
-                epicColumnCardCounts[epicKey] += 1; // Count epic card
-                columnHeights[epicIndex] += frame.height + spacing;
-                totalCreated++;
-                processedCount++;
-              }
-            } else {
-              // Place simplified epic label in subsequent sprints (all sprints with tickets)
-              const y = cardsStartY + epicColumnHeights[epicKey];
-              const labelFrame = await createEpicLabelCard(
-                epicTitle,
-                epicStatus,
-                epicPriorityRank,
-                epicIssueKey,
-                currentEpicX,
-                y,
-                jiraBaseUrl
-              );
+        // Calculate starting Y position for cards (after the line with spacing)
+        const cardsStartY = lineY + spacingAfterLine;
 
-              createdFrames.push(labelFrame);
-              epicColumnHeights[epicKey] += labelFrame.height + spacing;
-              // Don't count label cards toward the 15-card limit
-              columnHeights[epicIndex] += labelFrame.height + spacing;
-              totalCreated++;
-              processedCount++;
-            }
-          } catch (error) {
-            console.error('Error creating epic card/label:', error);
-          }
-        }
-
-        // Filter out the epic issue from the list of issues to process (if it was included)
-        let issuesToProcess = epicColumnIssues.filter(
-          (issue: { [key: string]: string }) => {
-            const issueType = (issue['Issue Type'] || '').trim().toLowerCase();
-            const issueKey = issue['Issue key'] || '';
-            // Exclude the epic issue itself if it matches the epic key
-            if (
-              epicCardToPlace &&
-              issueType === 'epic' &&
-              issueKey.trim() === epicKey.trim()
-            ) {
-              return false; // Skip the epic issue, it's already placed
-            }
-            return true;
-          }
-        );
-
-        // Sort issues by story points (highest to lowest)
-        issuesToProcess.sort((a, b) => {
-          const getStoryPoints = (issue: {
-            [key: string]: string;
-          }): number | null => {
-            const storyPointsStr = issue['Custom field (Story Points)'] || '';
-            if (
-              !storyPointsStr ||
-              storyPointsStr.trim() === '' ||
-              storyPointsStr.trim() === '?'
-            ) {
-              return null; // No story points
-            }
-            return parseStoryPoints(storyPointsStr);
-          };
-
-          const pointsA = getStoryPoints(a);
-          const pointsB = getStoryPoints(b);
-
-          // Sort highest to lowest (descending order)
-          // Items without story points go to the end
-          if (pointsA === null && pointsB === null) return 0; // Both have no points, maintain order
-          if (pointsA === null) return 1; // A has no points, put it after B
-          if (pointsB === null) return -1; // B has no points, put it after A
-          return pointsB - pointsA; // Descending order (highest first)
-        });
-
-        // Process issues in batches to prevent UI blocking
-        for (
-          let batchStart = 0;
-          batchStart < issuesToProcess.length;
-          batchStart += BATCH_SIZE
-        ) {
-          // Show progress feedback
-          processedCount += Math.min(
-            BATCH_SIZE,
-            issuesToProcess.length - batchStart
-          );
-          if (
-            processedCount % progressInterval === 0 ||
-            processedCount === totalIssues
-          ) {
-            const progress = Math.round((processedCount / totalIssues) * 100);
-            figma.notify(
-              `Processing ${processedCount}/${totalIssues} (${progress}%)...`,
-              {
-                timeout: TIMING_CONFIG.PROGRESS_NOTIFICATION_TIMEOUT,
-              }
-            );
-          }
-
-          // Process batch
-          // Extract epic link from the first issue in this epic group for storage
-          const firstIssueEpicLink =
-            issuesToProcess.length > 0
-              ? issuesToProcess[0]['Custom field (Epic Link)'] ||
-                issuesToProcess[0]['Epic Link'] ||
-                issuesToProcess[0]['Epic'] ||
-                ''
-              : '';
-          const batchResult = await processIssueBatch(
-            issuesToProcess,
-            batchStart,
-            BATCH_SIZE,
-            currentEpicX,
+        if (teamSprintIssues.length > 0) {
+          const result = await processTeamSprintTickets(
+            team,
+            sprintKey,
+            teamSprintIssues,
+            viewport.x + sprintXOffset,
             cardsStartY,
-            epicKey,
-            epicColumnHeights,
-            epicColumnCardCounts,
-            epicColumnOffsets,
-            epicIndex,
-            columnHeights,
-            createdFrames,
-            spacing,
             columnWidth,
-            jiraBaseUrl,
-            sprint, // Pass sprint name
-            firstIssueEpicLink || epicKey !== 'No Epic' ? epicKey : undefined // Pass epic link
+            epicIssues,
+            epicToFirstSprintKey,
+            createdFrames,
+            jiraBaseUrl
           );
-
-          totalCreated += batchResult.created;
-          totalSkipped += batchResult.skipped;
-
-          // Yield control to UI after each batch
-          if (batchStart + BATCH_SIZE < epicIssues.length) {
-            await yieldToUI();
-          }
+          teamMaxY = Math.max(teamMaxY, result.maxY);
+          // Track actual columns used (take max across teams)
+          actualSprintColumns[sprintKey] = Math.max(
+            actualSprintColumns[sprintKey] || 0,
+            result.columnsUsed
+          );
+        } else {
+          // Even if no issues, update maxY to account for labels
+          teamMaxY = Math.max(teamMaxY, cardsStartY);
         }
 
-        // Update cumulative X offset for next epic (base column + all rollover columns)
-        // Add 1 for base column, plus any rollover columns
-        const totalColumnsForThisEpic = 1 + epicColumnOffsets[epicKey];
-        cumulativeXOffset += totalColumnsForThisEpic * columnWidth;
+        sprintXOffset += sprintColumnWidth + sprintSpacing;
       }
 
-      // Update sprint label width to account for rollover columns
-      // The actual width needed is the cumulative offset (all columns including rollovers)
-      const actualSprintWidth = cumulativeXOffset;
-      if (actualSprintWidth > sprintLabelWidth) {
-        sprintLabelWidth = actualSprintWidth;
-        // Update the line width to match
-        sprintLine.resize(sprintLabelWidth, 0);
+      // Move to next team position (with spacing, but no separator line)
+      if (teamIndex < teams.length - 1) {
+        teamYOffset = teamMaxY + teamSpacing;
+      } else {
+        teamYOffset = teamMaxY;
       }
 
-      // Move to next sprint position
-      // Find the maximum height across all columns in this sprint (including empty columns)
-      const maxSprintHeight = Math.max(...columnHeights, 0);
-      // Move X position for next sprint (all epic columns width + spacing, including rollovers)
-      sprintXOffset += sprintLabelWidth + sprintSpacing;
+      // Track maximum Y position for vertical line height
+      maxTeamY = Math.max(maxTeamY, teamMaxY);
     }
+
+    // Update vertical line heights to span from top to bottom of all teams
+    const verticalLineStartY = fixedSprintLabelY - 100;
+    const verticalLineHeight = maxTeamY - verticalLineStartY + 100;
+    for (const verticalLine of sprintVerticalLines) {
+      verticalLine.resize(0, verticalLineHeight);
+    }
+    // Update backlog vertical line height as well
+    backlogVerticalLine.resize(0, verticalLineHeight);
+
+    // Count total created cards
+    totalCreated = createdFrames.filter((frame) => {
+      return frame.type === 'FRAME' && frame.getPluginData('templateType');
+    }).length;
 
     // Scroll to show all created cards
     if (createdFrames.length > 0) {
