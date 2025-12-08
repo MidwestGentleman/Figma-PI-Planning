@@ -376,6 +376,22 @@ function mapJiraIssueToTemplate(issue: { [key: string]: string }): {
         issueKey: issueKey, // Store issue key for hyperlink
       },
     };
+  } else if (issueType === 'bug' || issueType === 'defect') {
+    // Bugs use task template but with special styling (red color, bug icon)
+    templateType = 'task';
+    return {
+      templateType,
+      data: {
+        title: summary, // Title → Summary
+        Description: description || 'Bug description...', // Description → Description
+        'Story Points': storyPoints || '?', // Include Story Points if available
+        Assignee: issue['Assignee'] || 'Unassigned',
+        'Acceptance Criteria':
+          acceptanceCriteria || '- Criterion 1\n- Criterion 2',
+        issueKey: issueKey, // Store issue key for hyperlink
+        originalIssueType: 'bug', // Store original type for icon/color styling
+      },
+    };
   } else if (issueType === 'task') {
     templateType = 'task';
     return {
@@ -493,25 +509,19 @@ function mapJiraIssueToTemplate(issue: { [key: string]: string }): {
       },
     };
   } else {
-    // Default to initiative for unknown issue types without dates
-    templateType = 'initiative';
-    // Truncate description for display, but store full description for export
-    const displayDescription = description
-      ? truncateDescription(description)
-      : 'Initiative description...';
+    // Default to task for unknown issue types (not initiatives/themes/milestones)
+    templateType = 'task';
     return {
       templateType,
       data: {
         title: summary, // Title → Summary
-        Description: displayDescription, // Truncated description for display
-        Dependencies: dependencies || 'None',
-        'Priority Rank':
-          issue['Priority'] || issue['Custom field (Priority Rank)'] || '#',
+        Description: description || 'Task description...', // Description → Description
+        'Story Points': storyPoints || '?', // Include Story Points if available
+        Assignee: issue['Assignee'] || 'Unassigned',
         'Acceptance Criteria':
           acceptanceCriteria || '- Criterion 1\n- Criterion 2',
-        Status: status, // Status field for display at bottom
-        issueKey: issueKey, // Store issue key for round-trip export
-        // Note: Full description is stored in plugin data for export preservation
+        issueKey: issueKey, // Store issue key for hyperlink
+        originalIssueType: issueType, // Store original type for reference
       },
     };
   }
@@ -577,10 +587,94 @@ function getSprintValue(issue: { [key: string]: string }): string {
 }
 
 /**
- * Extracts sprint dates from a Jira issue.
+ * Calculates the first Wednesday of a given year.
+ * @param year - The year (e.g., 2026)
+ * @returns Date object for the first Wednesday of the year
  */
-function getSprintDates(issue: { [key: string]: string }): string {
-  // Check for common sprint date field names
+function getFirstWednesdayOfYear(year: number): Date {
+  // January 1st of the year
+  const jan1 = new Date(year, 0, 1);
+  // Get day of week: 0 = Sunday, 1 = Monday, 2 = Tuesday, 3 = Wednesday, 4 = Thursday, 5 = Friday, 6 = Saturday
+  const dayOfWeek = jan1.getDay();
+
+  // Calculate days to add to get to the first Wednesday
+  // If Jan 1 is Sunday (0), first Wednesday is Jan 3 (add 3 days)
+  // If Jan 1 is Monday (1), first Wednesday is Jan 2 (add 1 day)
+  // If Jan 1 is Tuesday (2), first Wednesday is Jan 1 (add 0 days) - wait, that's wrong
+  // If Jan 1 is Tuesday (2), first Wednesday is Jan 2 (add 1 day)
+  // If Jan 1 is Wednesday (3), first Wednesday is Jan 1 (add 0 days)
+  // If Jan 1 is Thursday (4), first Wednesday is Jan 7 (add 6 days)
+  // If Jan 1 is Friday (5), first Wednesday is Jan 6 (add 5 days)
+  // If Jan 1 is Saturday (6), first Wednesday is Jan 5 (add 4 days)
+
+  // Calculate days to add to get to the first Wednesday
+  // Formula: (3 - dayOfWeek + 7) % 7 handles all cases
+  // If Jan 1 is Sunday (0): (3 - 0 + 7) % 7 = 3 (Jan 4, but that's wrong - should be Jan 3)
+  // Actually, we need: if dayOfWeek <= 3, use (3 - dayOfWeek), else use (10 - dayOfWeek)
+  let daysToAdd: number;
+  if (dayOfWeek <= 3) {
+    // Sunday (0), Monday (1), Tuesday (2), or Wednesday (3)
+    // First Wednesday is: 3 - dayOfWeek days away (or same day if Wednesday)
+    daysToAdd = dayOfWeek === 3 ? 0 : 3 - dayOfWeek;
+  } else {
+    // Thursday (4), Friday (5), or Saturday (6)
+    // First Wednesday is in the next week: 7 - (dayOfWeek - 3)
+    daysToAdd = 7 - (dayOfWeek - 3);
+  }
+
+  const firstWednesday = new Date(year, 0, 1 + daysToAdd);
+  return firstWednesday;
+}
+
+/**
+ * Calculates sprint dates based on year and sprint number.
+ * Sprints always start on Wednesday and are 14 days long (2 weeks).
+ * Exception: Sprint 25 ends on the first Wednesday of the next year (spans holidays).
+ * @param year - The year (e.g., 2026)
+ * @param sprintNumber - The sprint number (e.g., 1, 2, 25)
+ * @returns Formatted date string "M/D/YYYY - M/D/YYYY"
+ */
+function calculateSprintDates(year: number, sprintNumber: number): string {
+  // Get the first Wednesday of the year
+  const firstWednesday = getFirstWednesdayOfYear(year);
+
+  // Calculate start date: first Wednesday + (sprintNumber - 1) * 14 days
+  const startDate = new Date(firstWednesday);
+  startDate.setDate(startDate.getDate() + (sprintNumber - 1) * 14);
+
+  // Calculate end date
+  let endDate: Date;
+  if (sprintNumber === 25) {
+    // Sprint 25 exception: ends on the first Wednesday of the next year
+    const nextYear = year + 1;
+    endDate = getFirstWednesdayOfYear(nextYear);
+  } else {
+    // Standard sprints: start date + 13 days (14 days total, inclusive)
+    endDate = new Date(startDate);
+    endDate.setDate(endDate.getDate() + 13);
+  }
+
+  // Format dates as M/D/YYYY
+  const formatDate = (date: Date): string => {
+    const month = date.getMonth() + 1; // getMonth() returns 0-11
+    const day = date.getDate();
+    const year = date.getFullYear();
+    return `${month}/${day}/${year}`;
+  };
+
+  return `${formatDate(startDate)} - ${formatDate(endDate)}`;
+}
+
+/**
+ * Extracts sprint dates from a Jira issue, or calculates them from sprint key.
+ * @param issue - The Jira issue object
+ * @param sprintKey - Optional sprint key (e.g., "2026-1") for calculation fallback
+ */
+function getSprintDates(
+  issue: { [key: string]: string },
+  sprintKey?: string
+): string {
+  // First, try to extract dates from the issue
   const dateKeys = Object.keys(issue).filter((key) => {
     const lowerKey = key.toLowerCase();
     return (
@@ -614,6 +708,18 @@ function getSprintDates(issue: { [key: string]: string }): string {
     return startDate;
   } else if (endDate) {
     return endDate;
+  }
+
+  // If no dates found in issue, try to calculate from sprint key
+  if (sprintKey) {
+    const match = sprintKey.match(/^(\d{4})-(\d+)$/);
+    if (match) {
+      const year = parseInt(match[1], 10);
+      const sprintNumber = parseInt(match[2], 10);
+      if (!isNaN(year) && !isNaN(sprintNumber)) {
+        return calculateSprintDates(year, sprintNumber);
+      }
+    }
   }
 
   return 'MM/DD/YYYY - MM/DD/YYYY';
@@ -1935,9 +2041,10 @@ async function importCardsFromCSV(
 
         // Get sprint dates from the first issue in this sprint (if available)
         // If no tickets, try to find dates from any issue with this sprint key across all teams
+        // If no dates found, calculate from sprint key (year-sprintNumber)
         let sprintDates = 'MM/DD/YYYY - MM/DD/YYYY';
         if (teamSprintIssues.length > 0) {
-          sprintDates = getSprintDates(teamSprintIssues[0]);
+          sprintDates = getSprintDates(teamSprintIssues[0], sprintKey);
         } else {
           // Try to find dates from another team's sprint with the same sprint key
           for (const otherTeam of teams) {
@@ -1946,9 +2053,13 @@ async function importCardsFromCSV(
                 issuesByTeamAndSprint[otherTeam][sprintKey]) ||
               [];
             if (otherTeamSprintIssues.length > 0) {
-              sprintDates = getSprintDates(otherTeamSprintIssues[0]);
+              sprintDates = getSprintDates(otherTeamSprintIssues[0], sprintKey);
               break;
             }
+          }
+          // If still no dates found, calculate from sprint key
+          if (sprintDates === 'MM/DD/YYYY - MM/DD/YYYY') {
+            sprintDates = getSprintDates({}, sprintKey);
           }
         }
 

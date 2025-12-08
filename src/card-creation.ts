@@ -20,16 +20,48 @@ import {
 
 /**
  * Creates an icon shape based on template type.
+ * @param isBug - If true, creates a bug icon (X shape) with red color
  */
 function createIconShape(
   templateType: keyof typeof TEMPLATES,
   iconX: number,
-  iconY: number
+  iconY: number,
+  isBug: boolean = false
 ): SceneNode {
   const iconSize = CARD_CONFIG.ICON_SIZE;
   let iconShape: SceneNode;
 
-  if (templateType === 'theme') {
+  // Bug icon: X shape in light red
+  if (isBug) {
+    // Create an X shape using two rotated rectangles in a frame
+    const bugFrame = figma.createFrame();
+    bugFrame.resize(iconSize, iconSize);
+    bugFrame.x = iconX;
+    bugFrame.y = iconY;
+    bugFrame.fills = [];
+    
+    // First diagonal line (top-left to bottom-right)
+    const line1 = figma.createRectangle();
+    const lineWidth = iconSize * 0.15;
+    const lineLength = iconSize * 1.2;
+    line1.resize(lineWidth, lineLength);
+    line1.fills = [{ type: 'SOLID', color: { r: 0.9, g: 0.4, b: 0.4 } }];
+    line1.rotation = 45;
+    line1.x = iconSize / 2 - lineWidth / 2;
+    line1.y = iconSize / 2 - lineLength / 2;
+    
+    // Second diagonal line (top-right to bottom-left)
+    const line2 = figma.createRectangle();
+    line2.resize(lineWidth, lineLength);
+    line2.fills = [{ type: 'SOLID', color: { r: 0.9, g: 0.4, b: 0.4 } }];
+    line2.rotation = -45;
+    line2.x = iconSize / 2 - lineWidth / 2;
+    line2.y = iconSize / 2 - lineLength / 2;
+    
+    bugFrame.appendChild(line1);
+    bugFrame.appendChild(line2);
+    iconShape = bugFrame;
+  } else if (templateType === 'theme') {
     const rect = figma.createRectangle();
     rect.resize(iconSize * 1.5, iconSize * 0.6);
     rect.fills = [{ type: 'SOLID', color: { r: 0.4, g: 0.2, b: 0.6 } }];
@@ -196,7 +228,7 @@ export async function createEpicLabelCard(
   const iconSize = CARD_CONFIG.ICON_SIZE;
   const iconX = cardWidth - CARD_CONFIG.PADDING - iconSize;
   const iconY = CARD_CONFIG.PADDING;
-  const iconShape = createIconShape('epic', iconX, iconY);
+  const iconShape = createIconShape('epic', iconX, iconY, false);
   frame.appendChild(iconShape);
 
   const titleText = figma.createText();
@@ -350,11 +382,23 @@ export async function createTemplateCardWithPosition(
       sanitizeFieldValue(customData.issueKey, 100)
     );
   }
+  
+  // Store original issue type if provided (for bug styling, etc.)
+  if (customData && customData.originalIssueType) {
+    frame.setPluginData(
+      'originalIssueType',
+      sanitizeFieldValue(customData.originalIssueType, 50)
+    );
+  }
 
   const cardWidth = CARD_CONFIG.WIDTH;
   frame.resize(cardWidth, CARD_CONFIG.DEFAULT_HEIGHT);
 
-  const backgroundColor = getTemplateBackgroundColor(templateType);
+  // Check if this is a bug (stored in customData or will be in plugin data)
+  const isBug = customData && customData.originalIssueType === 'bug';
+  const backgroundColor = isBug
+    ? { r: 0.9, g: 0.4, b: 0.4 } // Light red for bugs
+    : getTemplateBackgroundColor(templateType);
   frame.fills = [
     {
       type: 'SOLID',
@@ -404,7 +448,8 @@ export async function createTemplateCardWithPosition(
   const iconSize = CARD_CONFIG.ICON_SIZE;
   const iconX = cardWidth - CARD_CONFIG.PADDING - iconSize;
   const iconY = CARD_CONFIG.PADDING;
-  const iconShape = createIconShape(templateType, iconX, iconY);
+  // Use the isBug variable declared above for icon styling
+  const iconShape = createIconShape(templateType, iconX, iconY, isBug);
   frame.appendChild(iconShape);
 
   const titleText = figma.createText();
