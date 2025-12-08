@@ -368,7 +368,8 @@ export async function createTemplateCardWithPosition(
   customData?: { [key: string]: string },
   x?: number,
   y?: number,
-  jiraBaseUrl?: string
+  jiraBaseUrl?: string,
+  importVerbose: boolean = true
 ): Promise<FrameNode> {
   validateTemplateType(templateType);
   validateCoordinate(x, 'x');
@@ -406,6 +407,15 @@ export async function createTemplateCardWithPosition(
       'originalIssueType',
       sanitizeFieldValue(customData.originalIssueType, 50)
     );
+  }
+  
+  // Store Description and Acceptance Criteria in plugin data for export
+  // This ensures they're preserved even when not displayed in non-verbose mode
+  if (customData && customData['Description']) {
+    frame.setPluginData('storedDescription', sanitizeFieldValue(customData['Description']));
+  }
+  if (customData && customData['Acceptance Criteria']) {
+    frame.setPluginData('storedAcceptanceCriteria', sanitizeFieldValue(customData['Acceptance Criteria']));
   }
 
   const cardWidth = CARD_CONFIG.WIDTH;
@@ -470,9 +480,15 @@ export async function createTemplateCardWithPosition(
   frame.appendChild(iconShape);
 
   const titleText = figma.createText();
-  const titleContent = sanitizeFieldValue(
+  let titleContent = sanitizeFieldValue(
     (customData && customData.title) || template.title
   );
+  
+  // Append issue key to title with pipe separator if it exists
+  if (customData && customData.issueKey && customData.issueKey.trim() !== '') {
+    titleContent = `${titleContent} | ${customData.issueKey.trim()}`;
+  }
+  
   // Don't pre-wrap - let Figma handle wrapping based on actual width
   titleText.characters = titleContent;
   titleText.fontSize = CARD_CONFIG.TITLE_FONT_SIZE;
@@ -554,34 +570,70 @@ export async function createTemplateCardWithPosition(
   titleText.resize(maxTitleWidth, titleHeight);
 
   let fieldsToShow: Array<{ label: string; value: string }> = [...template.fields];
-  if (templateType === 'userStory') {
-    if (customData && customData['Description']) {
-      const descriptionValue = customData['Description'];
-      fieldsToShow = [{ label: 'Description', value: descriptionValue }].concat(
-        template.fields.filter(
-          (f) =>
-            f.label !== 'As a' && f.label !== 'I want' && f.label !== 'So that'
-        )
+  
+  // For imported cards (customData exists), filter out template-specific fields
+  // "As a", "I want", "So that" should only appear for manually created user stories
+  // "Given", "When", "Then" should only appear for manually created test cards
+  if (customData) {
+    if (templateType === 'userStory') {
+      // For imported user stories, remove "As a", "I want", "So that" fields
+      fieldsToShow = fieldsToShow.filter(
+        (f) => f.label !== 'As a' && f.label !== 'I want' && f.label !== 'So that'
       );
-    }
-  } else if (templateType === 'test') {
-    if (customData && customData['Description']) {
-      const descriptionValue = customData['Description'];
-      fieldsToShow = [{ label: 'Description', value: descriptionValue }].concat(
-        template.fields.filter(
-          (f) => f.label !== 'Given' && f.label !== 'When' && f.label !== 'Then'
-        )
+      // Only add Description if importVerbose is true
+      if (importVerbose && customData['Description']) {
+        const descriptionValue = customData['Description'];
+        fieldsToShow = [{ label: 'Description', value: descriptionValue }].concat(fieldsToShow);
+      }
+    } else if (templateType === 'test') {
+      // For imported test cards, remove "Given", "When", "Then" fields
+      fieldsToShow = fieldsToShow.filter(
+        (f) => f.label !== 'Given' && f.label !== 'When' && f.label !== 'Then'
       );
+      // Only add Description if importVerbose is true
+      if (importVerbose && customData['Description']) {
+        const descriptionValue = customData['Description'];
+        fieldsToShow = [{ label: 'Description', value: descriptionValue }].concat(fieldsToShow);
+      }
+    } else {
+      // For other template types, only add Description if importVerbose is true
+      if (importVerbose && customData['Description']) {
+        const descriptionValue = customData['Description'];
+        // Add Description at the beginning if it doesn't already exist
+        const hasDescription = fieldsToShow.some(f => f.label === 'Description');
+        if (!hasDescription) {
+          fieldsToShow = [{ label: 'Description', value: descriptionValue }].concat(fieldsToShow);
+        } else {
+          // Replace existing Description
+          const descIndex = fieldsToShow.findIndex(f => f.label === 'Description');
+          if (descIndex !== -1) {
+            fieldsToShow[descIndex] = { label: 'Description', value: descriptionValue };
+          }
+        }
+      }
     }
   }
 
   const largeNumberField = getLargeNumberField(templateType);
   const fieldsToDisplay = fieldsToShow.filter(
-    (f) =>
-      (!largeNumberField || f.label !== largeNumberField) &&
-      f.label !== 'Assignee' &&
-      f.label !== 'Status'
+    (f) => {
+      // Always exclude large number field, Assignee, and Status
+      if (largeNumberField && f.label === largeNumberField) return false;
+      if (f.label === 'Assignee') return false;
+      if (f.label === 'Status') return false;
+      
+      // In non-verbose mode, hide Description and Acceptance Criteria
+      if (!importVerbose) {
+        if (f.label === 'Description' || f.label === 'Acceptance Criteria') {
+          return false;
+        }
+      }
+      
+      return true;
+    }
   );
+  
+  console.log(`Card creation - importVerbose: ${importVerbose}, fieldsToShow: ${fieldsToShow.length}, fieldsToDisplay: ${fieldsToDisplay.length}`);
 
   let yOffset = CARD_CONFIG.PADDING + titleHeight + CARD_CONFIG.PADDING;
   for (const field of fieldsToDisplay) {

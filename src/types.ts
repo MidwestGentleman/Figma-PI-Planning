@@ -7,7 +7,7 @@ import { TEMPLATES } from './templates';
  */
 export type PluginMessage =
   | { type: 'insert-template'; templateType: keyof typeof TEMPLATES }
-  | { type: 'import-csv'; csvText: string; jiraBaseUrl?: string }
+  | { type: 'import-csv'; csvText: string; jiraBaseUrl?: string; importVerbose?: boolean }
   | { type: 'export-csv'; filterNew?: boolean }
   | { type: 'get-jira-url' }
   | { type: 'set-jira-url'; jiraBaseUrl: string }

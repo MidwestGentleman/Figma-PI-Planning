@@ -1189,7 +1189,8 @@ async function processIssueBatch(
   columnWidth: number,
   jiraBaseUrl?: string,
   sprint?: string,
-  epicLink?: string
+  epicLink?: string,
+  importVerbose: boolean = true
 ): Promise<{ created: number; skipped: number }> {
   let created = 0;
   let skipped = 0;
@@ -1221,7 +1222,8 @@ async function processIssueBatch(
         mapped.data,
         currentX,
         y,
-        jiraBaseUrl
+        jiraBaseUrl,
+        importVerbose
       );
 
       // Store sprint and epic link in plugin data for round-trip export
@@ -1326,7 +1328,8 @@ async function processTeamSprintTickets(
   epicToFirstSprintKey: { [epicKey: string]: string },
   createdFrames: FrameNode[],
   jiraBaseUrl?: string,
-  updateLastCardBottom?: (bottom: number) => void
+  updateLastCardBottom?: (bottom: number) => void,
+  importVerbose: boolean = true
 ): Promise<{ maxY: number; columnsUsed: number }> {
   const spacing = LAYOUT_CONFIG.CARD_SPACING;
   const cardWidth = CARD_CONFIG.WIDTH;
@@ -1420,7 +1423,8 @@ async function processTeamSprintTickets(
               mapped.data,
               currentEpicX,
               y,
-              jiraBaseUrl
+              jiraBaseUrl,
+              importVerbose
             );
 
             const issueSprint = getSprintValue(epicCardToPlace);
@@ -1570,7 +1574,8 @@ async function processTeamSprintTickets(
             mapped.data,
             currentX,
             y,
-            jiraBaseUrl
+            jiraBaseUrl,
+            importVerbose
           );
 
           const issueSprint = getSprintValue(issue);
@@ -1770,13 +1775,20 @@ async function processTeamSprintTickets(
  */
 async function importCardsFromCSV(
   csvText: string,
-  jiraBaseUrl?: string
+  jiraBaseUrl?: string,
+  importVerbose: boolean = true
 ): Promise<void> {
   console.log(
     'importCardsFromCSV called with csvText length:',
     (csvText && csvText.length) || 0
   );
   console.log('importCardsFromCSV called with jiraBaseUrl:', jiraBaseUrl);
+  console.log(
+    'importCardsFromCSV called with importVerbose:',
+    importVerbose,
+    'type:',
+    typeof importVerbose
+  );
 
   try {
     validateCSVText(csvText);
@@ -2119,7 +2131,8 @@ async function importCardsFromCSV(
           (bottom: number) => {
             lastCardBottom = Math.max(lastCardBottom, bottom);
             teamLastCardBottom = Math.max(teamLastCardBottom, bottom);
-          }
+          },
+          importVerbose
         );
       } else {
         // Even if no backlog issues, ensure teamLastCardBottom is at least at the cards start position
@@ -2286,7 +2299,8 @@ async function importCardsFromCSV(
             (bottom: number) => {
               lastCardBottom = Math.max(lastCardBottom, bottom);
               teamLastCardBottom = Math.max(teamLastCardBottom, bottom);
-            }
+            },
+            importVerbose
           );
           // Track actual columns used (take max across teams)
           actualSprintColumns[sprintKey] = Math.max(
@@ -2481,8 +2495,15 @@ function extractCardData(frame: FrameNode): CardData | null {
 
   // Extract title from the first text node (which is the title)
   // This ensures we get the updated title if the user edited it
+  // Strip the issue key suffix (| ISSUE-KEY) if it exists
   const titleNode = textNodes[0];
-  const actualTitle = titleNode ? titleNode.characters.trim() : frame.name;
+  let actualTitle = titleNode ? titleNode.characters.trim() : frame.name;
+
+  // Remove issue key suffix if present (format: "Title | ISSUE-KEY")
+  const issueKeySuffixMatch = actualTitle.match(/\s+\|\s+([A-Z]+-\d+)$/);
+  if (issueKeySuffixMatch) {
+    actualTitle = actualTitle.substring(0, issueKeySuffixMatch.index).trim();
+  }
 
   // Skip the first text node (title) and process pairs (label, value)
   // But skip large text nodes at the bottom (Assignee and Story Points) - they'll be extracted separately
@@ -2833,6 +2854,13 @@ function extractCardData(frame: FrameNode): CardData | null {
   const team = frame.getPluginData('team') || undefined;
   const fullDescription = frame.getPluginData('fullDescription') || undefined;
 
+  // Extract stored Description and Acceptance Criteria from plugin data
+  // These are stored even when not displayed in non-verbose mode
+  const storedDescription =
+    frame.getPluginData('storedDescription') || undefined;
+  const storedAcceptanceCriteria =
+    frame.getPluginData('storedAcceptanceCriteria') || undefined;
+
   // For Theme, Epic, and Initiative cards, replace truncated Description with full description
   if (
     fullDescription &&
@@ -2848,6 +2876,46 @@ function extractCardData(frame: FrameNode): CardData | null {
     } else {
       // If Description field doesn't exist, add it
       fields.unshift({ label: 'Description', value: fullDescription });
+    }
+  } else if (storedDescription) {
+    // Use stored description if fullDescription is not available
+    const descriptionIndex = fields.findIndex((f) => f.label === 'Description');
+    if (descriptionIndex !== -1) {
+      fields[descriptionIndex] = {
+        label: 'Description',
+        value: storedDescription,
+      };
+    } else {
+      fields.unshift({ label: 'Description', value: storedDescription });
+    }
+  }
+
+  // Add stored Acceptance Criteria if it exists and is not already in fields
+  if (storedAcceptanceCriteria) {
+    const acceptanceCriteriaIndex = fields.findIndex(
+      (f) => f.label === 'Acceptance Criteria'
+    );
+    if (acceptanceCriteriaIndex !== -1) {
+      fields[acceptanceCriteriaIndex] = {
+        label: 'Acceptance Criteria',
+        value: storedAcceptanceCriteria,
+      };
+    } else {
+      // Add after Description if it exists, otherwise at the beginning
+      const descriptionIndex = fields.findIndex(
+        (f) => f.label === 'Description'
+      );
+      if (descriptionIndex !== -1) {
+        fields.splice(descriptionIndex + 1, 0, {
+          label: 'Acceptance Criteria',
+          value: storedAcceptanceCriteria,
+        });
+      } else {
+        fields.unshift({
+          label: 'Acceptance Criteria',
+          value: storedAcceptanceCriteria,
+        });
+      }
     }
   }
 
@@ -3492,7 +3560,15 @@ figma.ui.onmessage = async (msg: PluginMessage) => {
     try {
       console.log('Starting CSV import, data length:', msg.csvText.length);
       console.log('Jira Base URL received:', msg.jiraBaseUrl);
-      await importCardsFromCSV(msg.csvText, msg.jiraBaseUrl);
+      const importVerbose =
+        msg.importVerbose !== undefined ? msg.importVerbose : true;
+      console.log(
+        'Import CSV - importVerbose value:',
+        importVerbose,
+        'type:',
+        typeof importVerbose
+      );
+      await importCardsFromCSV(msg.csvText, msg.jiraBaseUrl, importVerbose);
     } catch (error) {
       const errorMessage = getErrorMessage(error);
       figma.notify(`❌ Error importing CSV: ${errorMessage}`);

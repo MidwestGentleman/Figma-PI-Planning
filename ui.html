@@ -184,6 +184,26 @@
             margin-bottom: 6px;
             color: var(--figma-color-text);
         }
+
+        .checkbox-container {
+            display: flex;
+            align-items: center;
+            margin-bottom: 12px;
+            gap: 8px;
+        }
+
+        .checkbox-container input[type="checkbox"] {
+            width: 16px;
+            height: 16px;
+            cursor: pointer;
+        }
+
+        .checkbox-container label {
+            font-size: 13px;
+            color: var(--figma-color-text);
+            cursor: pointer;
+            user-select: none;
+        }
     </style>
 </head>
 
@@ -282,6 +302,10 @@
         </label>
         <input type="text" id="jira-url" class="jira-url-input" placeholder="https://yourcompany.atlassian.net"
             value="">
+        <div class="checkbox-container">
+            <input type="checkbox" id="import-verbose">
+            <label for="import-verbose">Import Verbose</label>
+        </div>
         <label for="csv-upload" class="export-button"
             style="display: block; text-align: center; cursor: pointer; margin-bottom: 12px; width: 100%;">
             Import from Jira CSV
@@ -345,13 +369,16 @@
             reader.onload = (e) => {
                 const csvText = e.target.result;
                 const jiraBaseUrl = jiraUrlInput.value.trim() || undefined;
+                const importVerbose = document.getElementById('import-verbose').checked;
                 console.log('File read successfully, length:', csvText.length);
                 console.log('Jira Base URL being sent:', jiraBaseUrl);
+                console.log('Import Verbose:', importVerbose);
                 parent.postMessage({
                     pluginMessage: {
                         type: 'import-csv',
                         csvText: csvText,
-                        jiraBaseUrl: jiraBaseUrl
+                        jiraBaseUrl: jiraBaseUrl,
+                        importVerbose: importVerbose
                     }
                 }, '*');
             };
