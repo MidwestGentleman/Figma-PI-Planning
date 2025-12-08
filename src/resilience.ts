@@ -154,7 +154,7 @@ export class CircuitBreaker {
 
   constructor(
     private readonly failureThreshold: number = 5,
-    private readonly resetTimeout: number = 60000, // 1 minute
+    private readonly resetTimeout: number = 60000,
     private readonly halfOpenMaxAttempts: number = 2
   ) {}
 

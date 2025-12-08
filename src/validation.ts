@@ -44,14 +44,7 @@ export function validateCSVComprehensive(csvText: string): ValidationResult {
     return result;
   }
 
-  // Encoding validation - check for valid UTF-8
-  try {
-    // Simple UTF-8 validation
-    decodeURIComponent(escape(csvText));
-  } catch (e) {
-    result.isValid = false;
-    result.errors.push('CSV contains invalid character encoding');
-  }
+  // Skip strict encoding validation - CSV parser handles encoding issues
 
   // Structure validation
   const lines = csvText.split('\n').filter((line) => line.trim() !== '');
@@ -60,18 +53,18 @@ export function validateCSVComprehensive(csvText: string): ValidationResult {
     result.errors.push('CSV must contain at least a header and one data row');
   }
 
-  // Check for suspicious patterns (potential XSS/injection)
+  // Check for suspicious patterns (warnings only - Jira may contain legitimate HTML)
   const suspiciousPatterns = [
-    { pattern: /<script/i, name: 'script tags' },
-    { pattern: /javascript:/i, name: 'javascript protocol' },
-    { pattern: /on\w+\s*=/i, name: 'event handlers' },
-    { pattern: /<iframe/i, name: 'iframe tags' },
+    { pattern: /<script[^>]*>/i, name: 'script tags' },
+    { pattern: /javascript:\s*[^"'\s]/i, name: 'javascript protocol' },
+    { pattern: /on\w+\s*=\s*["'][^"']*["']/i, name: 'event handlers' },
+    { pattern: /<iframe[^>]*>/i, name: 'iframe tags' },
   ];
 
   for (const { pattern, name } of suspiciousPatterns) {
     if (pattern.test(csvText)) {
       result.warnings.push(`CSV contains potentially unsafe content: ${name}`);
-      // Don't fail validation, just warn
+      // Don't fail validation, just warn - Jira descriptions may contain HTML
     }
   }
 
@@ -131,26 +124,43 @@ export function validateJiraUrl(url: string): boolean {
     }
     
     return true;
-  } catch {
+  } catch (_) {
     return false;
   }
 }
 
 /**
  * Validates and normalizes Jira URL
+ * Automatically adds https:// if protocol is missing
  * @throws {PluginError} If URL is invalid
  */
 export function validateAndNormalizeJiraUrl(url: string): string {
-  if (!validateJiraUrl(url)) {
+  if (!url || typeof url !== 'string') {
     throw createError(
       ErrorCode.INVALID_URL,
-      'Invalid Jira URL. Must be a valid HTTPS URL.',
+      'Invalid Jira URL. Must be a non-empty string.',
       { url }
     );
   }
 
+  let normalized = url.trim();
+
+  // Add https:// if no protocol is present
+  if (!normalized.match(/^https?:\/\//i)) {
+    normalized = `https://${normalized}`;
+  }
+
+  // Now validate the normalized URL
+  if (!validateJiraUrl(normalized)) {
+    throw createError(
+      ErrorCode.INVALID_URL,
+      'Invalid Jira URL. Must be a valid domain name.',
+      { url, normalized }
+    );
+  }
+
   // Normalize: remove trailing slash
-  return url.trim().replace(/\/$/, '');
+  return normalized.replace(/\/$/, '');
 }
 
 /**

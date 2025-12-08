@@ -7,7 +7,6 @@
  * and imports functionality from organized modules.
  */
 
-// Import organized modules
 import { PluginMessage, UIMessage, CardData } from './types';
 import { TEMPLATES } from './templates';
 import {
@@ -41,13 +40,18 @@ import {
   createTemplateCardWithPosition,
   createEpicLabelCard,
 } from './card-creation';
+// Enterprise-grade modules
+import { extractErrorInfo, createError, ErrorCode } from './errors';
+import { logger } from './logger';
+import {
+  validateCSVComprehensive,
+  validateAndNormalizeJiraUrl,
+} from './validation';
+import { withRetry } from './resilience';
 
-// All constants, types, and utility functions are now imported from organized modules above
-// CSV parsing, card creation, and other functionality continues below
-
-// Card creation functions are now imported from card-creation.ts module
-
-// Helper to parse a CSV line (handles quoted fields)
+/**
+ * Parses a CSV line, handling quoted fields and escaped quotes.
+ */
 function parseCSVLine(line: string): string[] {
   const result: string[] = [];
   let current = '';
@@ -59,15 +63,12 @@ function parseCSVLine(line: string): string[] {
 
     if (char === '"') {
       if (inQuotes && nextChar === '"') {
-        // Escaped quote
         current += '"';
-        i++; // Skip next quote
+        i++;
       } else {
-        // Toggle quote state
         inQuotes = !inQuotes;
       }
     } else if (char === ',' && !inQuotes) {
-      // End of field
       result.push(current.trim());
       current = '';
     } else {
@@ -75,7 +76,6 @@ function parseCSVLine(line: string): string[] {
     }
   }
 
-  // Add last field
   result.push(current.trim());
   return result;
 }
@@ -86,7 +86,6 @@ function parseCSVLine(line: string): string[] {
 function parseCSV(csvText: string): Array<{ [key: string]: string }> {
   if (!csvText || csvText.trim() === '') return [];
 
-  // Parse header first
   let headerEnd = 0;
   let inQuotes = false;
   for (let i = 0; i < csvText.length; i++) {
@@ -95,7 +94,7 @@ function parseCSV(csvText: string): Array<{ [key: string]: string }> {
 
     if (char === '"') {
       if (inQuotes && nextChar === '"') {
-        i++; // Skip escaped quote
+        i++;
       } else {
         inQuotes = !inQuotes;
       }
@@ -114,8 +113,6 @@ function parseCSV(csvText: string): Array<{ [key: string]: string }> {
   let currentLine = '';
   inQuotes = false;
   let lineStart = headerEnd + 1;
-
-  // Parse data rows, handling multiline fields
   for (let i = lineStart; i < csvText.length; i++) {
     const char = csvText[i];
     const nextChar = csvText[i + 1];
@@ -136,23 +133,17 @@ function parseCSV(csvText: string): Array<{ [key: string]: string }> {
           const row: { [key: string]: string } = {};
           headers.forEach((header, index) => {
             const value = values[index] || '';
-            // Handle duplicate column names (like multiple "Sprint" columns)
-            // For duplicate names, coalesce values - use first non-empty value
+            // Coalesce duplicate column names: use first non-empty value
             if (header in row) {
-              // Column name already exists, coalesce: keep existing if non-empty, otherwise use new value
               if (!row[header] || row[header].trim() === '') {
                 if (value && value.trim() !== '') {
                   row[header] = value;
                 }
               }
-              // If existing value is non-empty, keep it (don't overwrite)
             } else {
-              // First occurrence of this column name
               row[header] = value;
             }
           });
-
-          // Only add if has data
           const hasData = Object.values(row).some(
             (val) => val && val.trim() !== ''
           );
@@ -167,25 +158,20 @@ function parseCSV(csvText: string): Array<{ [key: string]: string }> {
     }
   }
 
-  // Handle last row if no trailing newline
   if (currentLine.trim() !== '') {
     const values = parseCSVLine(currentLine);
     if (values.length > 0 && values[0].trim() !== '') {
       const row: { [key: string]: string } = {};
       headers.forEach((header, index) => {
         const value = values[index] || '';
-        // Handle duplicate column names (like multiple "Sprint" columns)
-        // For duplicate names, coalesce values - use first non-empty value
+        // Coalesce duplicate column names: use first non-empty value
         if (header in row) {
-          // Column name already exists, coalesce: keep existing if non-empty, otherwise use new value
           if (!row[header] || row[header].trim() === '') {
             if (value && value.trim() !== '') {
               row[header] = value;
             }
           }
-          // If existing value is non-empty, keep it (don't overwrite)
         } else {
-          // First occurrence of this column name
           row[header] = value;
         }
       });
@@ -210,32 +196,16 @@ function formatJiraText(text: string): string {
 
   let formatted = text;
 
-  // Convert Jira links [url|text] to "text (url)" or just "url" if no text
-  // Handle [url|text] format first
+  // Convert Jira formatting to plain text
   formatted = formatted.replace(/\[([^\]]+)\|([^\]]+)\]/g, '$2 ($1)');
-  // Then handle simple [url] format
   formatted = formatted.replace(/\[([^\]]+)\]/g, '$1');
-
-  // Convert Jira bold *text* to bold text (remove asterisks but keep emphasis)
-  // Handle single asterisks for bold
   formatted = formatted.replace(/\*([^*\n]+)\*/g, '$1');
-  // Handle double asterisks
   formatted = formatted.replace(/\*\*([^*\n]+)\*\*/g, '$1');
-
-  // Convert Jira headings # text to bold headings
   formatted = formatted.replace(/^#+\s+(.+)$/gm, '$1');
-
-  // Convert horizontal rules ---- to separator line
   formatted = formatted.replace(/^----\s*$/gm, '─────────────────────────');
-
-  // Preserve bullet points and indentation
-  // Convert Jira list items to clean bullet points
   formatted = formatted.replace(/^(\s*)[-*]\s+/gm, '$1• ');
-
-  // Clean up excessive blank lines (more than 2 consecutive)
   formatted = formatted.replace(/\n{3,}/g, '\n\n');
 
-  // Trim whitespace from each line while preserving structure
   const lines = formatted.split('\n');
   const cleanedLines = lines.map((line) => {
     // Preserve indentation for list items and structured content
@@ -260,7 +230,6 @@ function truncateDescription(
   if (!description || description.length <= maxLength) {
     return description;
   }
-  // Truncate to maxLength - 3 to make room for "..."
   return description.substring(0, maxLength - 3) + '...';
 }
 
@@ -272,32 +241,12 @@ function mapJiraIssueToTemplate(issue: { [key: string]: string }): {
   templateType: keyof typeof TEMPLATES;
   data: { [key: string]: string };
 } | null {
-  // Normalize issue type: trim whitespace and convert to lowercase for comparison
   const rawIssueType = issue['Issue Type'] || '';
   const issueType = rawIssueType.trim().toLowerCase();
   const summary = issue['Summary'] || '';
-
-  // Debug logging for initiatives to help diagnose mapping issues
-  if (
-    summary &&
-    (summary.includes('PCEC') ||
-      summary.includes('Adventure Era') ||
-      summary.includes('SEAS CAP'))
-  ) {
-    console.log(
-      `[DEBUG] Mapping issue: "${summary}"`,
-      `Raw Issue Type: "${rawIssueType}"`,
-      `Normalized: "${issueType}"`,
-      `Due Date: "${issue['Due Date'] || ''}"`,
-      `Fix Versions: "${issue['Fix Version/s'] || ''}"`,
-      `All issue keys:`,
-      Object.keys(issue).filter((k) => k.toLowerCase().includes('issue'))
-    );
-  }
   const description = formatJiraText(issue['Description'] || '');
   const priority = issue['Priority'] || '';
   const status = issue['Status'] || 'Open';
-  // Parse and round story points to whole number
   const storyPointsRaw = issue['Custom field (Story Points)'] || '';
   const storyPoints =
     storyPointsRaw && storyPointsRaw !== '?' && storyPointsRaw !== '#'
@@ -315,7 +264,6 @@ function mapJiraIssueToTemplate(issue: { [key: string]: string }): {
   const businessValue = issue['Custom field (Business Value)'] || '';
   const dependencies = issue['Outward issue link (Blocks)'] || '';
 
-  // Parse user story format from description or custom field
   let asA = '';
   let iWant = '';
   let soThat = '';
@@ -329,14 +277,10 @@ function mapJiraIssueToTemplate(issue: { [key: string]: string }): {
   if (iWantMatch) iWant = iWantMatch[1].trim();
   if (soThatMatch) soThat = soThatMatch[1].trim();
 
-  // Map issue type to template
-  // IMPORTANT: Check explicit issue types BEFORE checking dates to avoid
-  // incorrectly mapping Initiatives/Themes with dates to Milestones
-  // Issue type is already normalized to lowercase and trimmed above
+  // Check explicit issue types BEFORE checking dates to avoid incorrectly
+  // mapping Initiatives/Themes with dates to Milestones
   let templateType: keyof typeof TEMPLATES;
 
-  // Map based on mapping: Title = Summary, Team = Custom field (Studio)
-  // Note: issueType is already normalized to lowercase and trimmed
   if (issueType === 'epic') {
     templateType = 'epic';
     // Truncate description for display, but store full description for export
@@ -363,7 +307,6 @@ function mapJiraIssueToTemplate(issue: { [key: string]: string }): {
     (asA && iWant && soThat)
   ) {
     templateType = 'userStory';
-    // For imported user stories, use Description instead of As a/I want/So that
     return {
       templateType,
       data: {
@@ -378,7 +321,6 @@ function mapJiraIssueToTemplate(issue: { [key: string]: string }): {
       },
     };
   } else if (issueType === 'bug' || issueType === 'defect') {
-    // Bugs use task template but with special styling (red color, bug icon)
     templateType = 'task';
     return {
       templateType,
@@ -453,17 +395,11 @@ function mapJiraIssueToTemplate(issue: { [key: string]: string }): {
           acceptanceCriteria || '- Criterion 1\n- Criterion 2',
         Status: status, // Status field for display at bottom
         issueKey: issueKey, // Store issue key for round-trip export
-        // Note: Full description is stored in plugin data for export preservation
       },
     };
   } else if (issueType === 'initiative') {
-    // Initiative must be checked BEFORE date-based milestone detection
-    // to prevent initiatives with dates from being incorrectly mapped to milestones
-    console.log(
-      `[DEBUG] Mapping to Initiative: "${summary}", issueType="${issueType}", raw="${rawIssueType}"`
-    );
+    // Checked before date-based milestone detection to prevent incorrect mapping
     templateType = 'initiative';
-    // Truncate description for display, but store full description for export
     const displayDescription = description
       ? truncateDescription(description)
       : 'Initiative description...';
@@ -478,11 +414,9 @@ function mapJiraIssueToTemplate(issue: { [key: string]: string }): {
         'Acceptance Criteria':
           acceptanceCriteria || '- Criterion 1\n- Criterion 2',
         issueKey: issueKey, // Store issue key for round-trip export
-        // Note: Full description is stored in plugin data for export preservation
       },
     };
   } else if (issueType === 'milestone') {
-    // Explicit milestone type
     templateType = 'milestone';
     return {
       templateType,
@@ -494,11 +428,7 @@ function mapJiraIssueToTemplate(issue: { [key: string]: string }): {
       },
     };
   } else if (dueDate || fixVersions) {
-    // Use milestone for items with dates ONLY if issue type is not explicitly defined
-    // This is a fallback for unknown issue types that have dates
-    console.log(
-      `[DEBUG] Mapping to Milestone (date-based fallback): "${summary}", issueType="${issueType}", raw="${rawIssueType}", dueDate="${dueDate}", fixVersions="${fixVersions}"`
-    );
+    // Fallback for unknown issue types that have dates
     templateType = 'milestone';
     return {
       templateType,
@@ -510,7 +440,6 @@ function mapJiraIssueToTemplate(issue: { [key: string]: string }): {
       },
     };
   } else {
-    // Default to task for unknown issue types (not initiatives/themes/milestones)
     templateType = 'task';
     return {
       templateType,
@@ -528,15 +457,11 @@ function mapJiraIssueToTemplate(issue: { [key: string]: string }): {
   }
 }
 
-// Card creation functions are imported from card-creation.ts module
-// CSV parsing and import/export functions continue below
-
 /**
  * Extracts sprint value from a Jira issue, handling multiple sprint column variations.
  */
 function getSprintValue(issue: { [key: string]: string }): string {
-  // First, prioritize exact "Sprint" column matches (case-insensitive)
-  // This handles the most common case where columns are named exactly "Sprint"
+  // Prioritize exact "Sprint" column matches first
   const exactSprintKeys = Object.keys(issue).filter(
     (key) => key.toLowerCase() === 'sprint'
   );
@@ -546,7 +471,6 @@ function getSprintValue(issue: { [key: string]: string }): string {
     const value = issue[key];
     if (value && value.trim() !== '') {
       const trimmed = value.trim();
-      // Skip empty values, empty arrays, and non-sprint-looking values
       if (
         trimmed.length > 0 &&
         trimmed !== '[]' &&
@@ -557,8 +481,7 @@ function getSprintValue(issue: { [key: string]: string }): string {
     }
   }
 
-  // Then check for columns that contain "sprint" but exclude "Custom field" columns
-  // This handles variations like "Sprint Name" but avoids false matches
+  // Check columns containing "sprint" (excluding "Custom field" columns)
   const sprintKeys = Object.keys(issue).filter((key) => {
     const lowerKey = key.toLowerCase();
     return (
@@ -573,7 +496,6 @@ function getSprintValue(issue: { [key: string]: string }): string {
     const value = issue[key];
     if (value && value.trim() !== '') {
       const trimmed = value.trim();
-      // Skip empty values, empty arrays, and non-sprint-looking values
       if (
         trimmed.length > 0 &&
         trimmed !== '[]' &&
@@ -593,33 +515,15 @@ function getSprintValue(issue: { [key: string]: string }): string {
  * @returns Date object for the first Wednesday of the year
  */
 function getFirstWednesdayOfYear(year: number): Date {
-  // January 1st of the year
   const jan1 = new Date(year, 0, 1);
-  // Get day of week: 0 = Sunday, 1 = Monday, 2 = Tuesday, 3 = Wednesday, 4 = Thursday, 5 = Friday, 6 = Saturday
   const dayOfWeek = jan1.getDay();
 
-  // Calculate days to add to get to the first Wednesday
-  // If Jan 1 is Sunday (0), first Wednesday is Jan 3 (add 3 days)
-  // If Jan 1 is Monday (1), first Wednesday is Jan 2 (add 1 day)
-  // If Jan 1 is Tuesday (2), first Wednesday is Jan 1 (add 0 days) - wait, that's wrong
-  // If Jan 1 is Tuesday (2), first Wednesday is Jan 2 (add 1 day)
-  // If Jan 1 is Wednesday (3), first Wednesday is Jan 1 (add 0 days)
-  // If Jan 1 is Thursday (4), first Wednesday is Jan 7 (add 6 days)
-  // If Jan 1 is Friday (5), first Wednesday is Jan 6 (add 5 days)
-  // If Jan 1 is Saturday (6), first Wednesday is Jan 5 (add 4 days)
-
-  // Calculate days to add to get to the first Wednesday
-  // Formula: (3 - dayOfWeek + 7) % 7 handles all cases
-  // If Jan 1 is Sunday (0): (3 - 0 + 7) % 7 = 3 (Jan 4, but that's wrong - should be Jan 3)
-  // Actually, we need: if dayOfWeek <= 3, use (3 - dayOfWeek), else use (10 - dayOfWeek)
+  // Calculate days to first Wednesday: if dayOfWeek <= 3, use (3 - dayOfWeek),
+  // otherwise first Wednesday is in next week: 7 - (dayOfWeek - 3)
   let daysToAdd: number;
   if (dayOfWeek <= 3) {
-    // Sunday (0), Monday (1), Tuesday (2), or Wednesday (3)
-    // First Wednesday is: 3 - dayOfWeek days away (or same day if Wednesday)
     daysToAdd = dayOfWeek === 3 ? 0 : 3 - dayOfWeek;
   } else {
-    // Thursday (4), Friday (5), or Saturday (6)
-    // First Wednesday is in the next week: 7 - (dayOfWeek - 3)
     daysToAdd = 7 - (dayOfWeek - 3);
   }
 
@@ -636,28 +540,21 @@ function getFirstWednesdayOfYear(year: number): Date {
  * @returns Formatted date string "M/D/YYYY - M/D/YYYY"
  */
 function calculateSprintDates(year: number, sprintNumber: number): string {
-  // Get the first Wednesday of the year
   const firstWednesday = getFirstWednesdayOfYear(year);
-
-  // Calculate start date: first Wednesday + (sprintNumber - 1) * 14 days
   const startDate = new Date(firstWednesday);
   startDate.setDate(startDate.getDate() + (sprintNumber - 1) * 14);
 
-  // Calculate end date
   let endDate: Date;
   if (sprintNumber === 25) {
-    // Sprint 25 exception: ends on the first Wednesday of the next year
-    const nextYear = year + 1;
-    endDate = getFirstWednesdayOfYear(nextYear);
+    // Sprint 25 spans holidays and ends on first Wednesday of next year
+    endDate = getFirstWednesdayOfYear(year + 1);
   } else {
-    // Standard sprints: start date + 13 days (14 days total, inclusive)
+    // Standard sprints: 14 days total (inclusive)
     endDate = new Date(startDate);
     endDate.setDate(endDate.getDate() + 13);
   }
-
-  // Format dates as M/D/YYYY
   const formatDate = (date: Date): string => {
-    const month = date.getMonth() + 1; // getMonth() returns 0-11
+    const month = date.getMonth() + 1;
     const day = date.getDate();
     const year = date.getFullYear();
     return `${month}/${day}/${year}`;
@@ -675,7 +572,6 @@ function getSprintDates(
   issue: { [key: string]: string },
   sprintKey?: string
 ): string {
-  // First, try to extract dates from the issue
   const dateKeys = Object.keys(issue).filter((key) => {
     const lowerKey = key.toLowerCase();
     return (
@@ -686,7 +582,6 @@ function getSprintDates(
     );
   });
 
-  // Try to find start and end dates
   let startDate = '';
   let endDate = '';
 
@@ -702,7 +597,6 @@ function getSprintDates(
     }
   }
 
-  // If we found both dates, format them
   if (startDate && endDate) {
     return `${startDate} - ${endDate}`;
   } else if (startDate) {
@@ -711,7 +605,6 @@ function getSprintDates(
     return endDate;
   }
 
-  // If no dates found in issue, try to calculate from sprint key
   if (sprintKey) {
     const match = sprintKey.match(/^(\d{4})-(\d+)$/);
     if (match) {
@@ -737,9 +630,7 @@ function isNumericTeamID(value: string): boolean {
     return false;
   }
   const trimmed = value.trim();
-  // Check if it's purely numeric (e.g., "1039", "1040")
-  // or a version-like number (e.g., "1.0", "2.0", "3.0")
-  // Pattern matches: pure numbers, or numbers with optional decimal point and digits
+  // Reject numeric team IDs (e.g., "1039", "1.0")
   const numericPattern = /^\d+(\.\d+)?$/;
   return numericPattern.test(trimmed);
 }
@@ -760,16 +651,13 @@ function parseSprintName(sprintName: string): {
     return null;
   }
 
-  // Pattern: "{Team Name} {Year}-{Sprint Number}"
-  // Examples: "Triton 2025-25", "Crush 2025-25", "GH 2025-24"
+  // Pattern: "{Team Name} {Year}-{Sprint Number}" (e.g., "Triton 2025-25")
   const match = sprintName.trim().match(/^(.+?)\s+(\d{4})-(\d+)$/);
   if (!match) {
     return null; // Doesn't match the expected format
   }
 
   const team = match[1].trim();
-  // Reject if team name is purely numeric (e.g., "1.0", "2.0", "1039")
-  // These are team IDs, not team names
   if (isNumericTeamID(team)) {
     return null; // Invalid: team part is numeric, not a team name
   }
@@ -829,7 +717,6 @@ function preprocessMultiTeamData(
   sprintColumnWidths: { [sprintKey: string]: number }; // Max epics per sprint across all teams
   epicIssues: Array<{ [key: string]: string }>;
 } {
-  // Collect all sprints and parse them
   const sprintMap = new Map<string, ReturnType<typeof parseSprintName>>();
   const teamSet = new Set<string>();
   const issuesByTeamAndSprint: {
@@ -842,7 +729,6 @@ function preprocessMultiTeamData(
   } = {};
   const epicIssues: Array<{ [key: string]: string }> = [];
 
-  // First pass: parse sprints and identify teams
   for (const issue of issues) {
     if (!issue['Summary'] || issue['Summary'].trim() === '') {
       continue;
@@ -856,7 +742,6 @@ function preprocessMultiTeamData(
     const sprintName = getSprintValue(issue);
     const parsed = parseSprintName(sprintName);
 
-    // If sprint parses correctly, add it to sprintMap (regardless of team source)
     if (parsed) {
       sprintMap.set(sprintName, parsed);
     }
@@ -865,30 +750,23 @@ function preprocessMultiTeamData(
     // Custom field (Studio) typically contains the written team name (e.g., "Triton", "Gadget Hackwrench")
     // Custom field (Team) may contain an ID (e.g., "1039", "1040") or a name - validate it's not numeric
     let team = '';
-    // First priority: Custom field (Studio) - written team name
     if (
       issue['Custom field (Studio)'] &&
       issue['Custom field (Studio)'].trim() !== ''
     ) {
       team = issue['Custom field (Studio)'].trim();
-    }
-    // Second priority: Custom field (Team) - may be ID or name
-    // Only use it if it looks like a team name (not a numeric ID like "1.0", "2.0", "1039")
-    else if (
+    } else if (
       issue['Custom field (Team)'] &&
       issue['Custom field (Team)'].trim() !== ''
     ) {
       const teamFieldValue = issue['Custom field (Team)'].trim();
-      // Only use Custom field (Team) if it's not a numeric ID
       if (!isNumericTeamID(teamFieldValue)) {
         team = teamFieldValue;
       }
     }
-    // Third priority: Extract from sprint name (only if parsed successfully and team is valid)
     if (!team && parsed && !isNumericTeamID(parsed.team)) {
       team = parsed.team;
     }
-    // Fallback: Unknown
     if (!team) {
       team = 'Unknown';
     }
@@ -911,17 +789,14 @@ function preprocessMultiTeamData(
         }
         issuesByTeamAndSprint[teamKey][sprintKey].push(issue);
       } else {
-        // Backlog or invalid sprint
         issuesByTeamAndBacklog[teamKey].push(issue);
       }
     }
   }
 
-  // Collect all unique sprint keys and sort them
-  // Only include sprint keys that have at least one issue with a valid team (not "Unknown" or numeric IDs)
+  // Collect unique sprint keys, excluding those with invalid teams
   const sprintKeySet = new Set<string>();
   for (const teamKey of teamSet) {
-    // Skip "Unknown" team and numeric team IDs - don't create sprints for issues without valid teams
     if (
       teamKey === 'Unknown' ||
       teamKey.trim() === '' ||
@@ -939,7 +814,6 @@ function preprocessMultiTeamData(
   }
 
   const sprintKeys = Array.from(sprintKeySet).sort((a, b) => {
-    // Sort by year first, then sprint number
     const [yearA, sprintA] = a.split('-').map(Number);
     const [yearB, sprintB] = b.split('-').map(Number);
     if (yearA !== yearB) {
@@ -948,22 +822,18 @@ function preprocessMultiTeamData(
     return sprintA - sprintB;
   });
 
-  // Add future sprints for PI planning purposes (number configurable via settings)
-  // numFutureSprints: Controls how many future sprints are added starting from the last sprint in the import
-  // futureSprintsColumns: Controls how many columns each future sprint should span
+  // Add future sprints for PI planning (configurable via settings)
   const futureSprintKeys: string[] = [];
-  const numFutureSprintsToAdd = numFutureSprints || 6; // Default to 6 if not provided
+  const numFutureSprintsToAdd = numFutureSprints || 6;
   if (sprintKeys.length > 0) {
-    // Get the last sprint from the sorted sprint keys (most recent sprint in the import)
     const lastSprintKey = sprintKeys[sprintKeys.length - 1];
     const [lastYear, lastSprintNumber] = lastSprintKey.split('-').map(Number);
 
-    // Calculate the next N sprints (where N = numFutureSprints)
     for (let i = 1; i <= numFutureSprintsToAdd; i++) {
       let nextYear = lastYear;
       let nextSprintNumber = lastSprintNumber + i;
 
-      // Handle year rollover (sprints go up to 25, then roll to next year)
+      // Handle year rollover (sprints max at 25)
       if (nextSprintNumber > 25) {
         nextYear = lastYear + 1;
         nextSprintNumber = nextSprintNumber - 25;
@@ -975,12 +845,10 @@ function preprocessMultiTeamData(
     }
   }
 
-  // Calculate sprint column widths (accounting for epics that span multiple columns)
   const sprintColumnWidths: { [sprintKey: string]: number } = {};
-  const MAX_CARDS_PER_COLUMN = maxCardsPerColumn; // Use setting from user preferences
+  const MAX_CARDS_PER_COLUMN = maxCardsPerColumn;
   for (const sprintKey of sprintKeys) {
-    // Future sprints use the configured number of columns (futureSprintsColumns) for PI planning
-    // This controls how many columns each future sprint spans
+    // Future sprints use configured column count for PI planning
     if (futureSprintKeys.includes(sprintKey)) {
       sprintColumnWidths[sprintKey] = futureSprintsColumns;
       continue;
@@ -1003,23 +871,17 @@ function preprocessMultiTeamData(
         const epicKey = epicLink.trim() || 'No Epic';
         epicTicketCounts[epicKey] = (epicTicketCounts[epicKey] || 0) + 1;
       }
-      // Calculate total columns needed: each epic needs columns based on total items (epic card + tickets)
-      // Epic cards count toward the MAX_CARDS_PER_COLUMN limit, so we calculate: ceil((1 epic card + tickets) / MAX_CARDS_PER_COLUMN)
+      // Calculate columns: ceil((epic card + tickets) / MAX_CARDS_PER_COLUMN)
       let totalColumns = 0;
       for (const epicKey in epicTicketCounts) {
-        const ticketCount = epicTicketCounts[epicKey];
-        // Epic card (1) + tickets, all count toward the column limit
-        const totalItems = 1 + ticketCount;
-        const columnsForEpic = Math.ceil(totalItems / MAX_CARDS_PER_COLUMN);
-        totalColumns += columnsForEpic;
+        const totalItems = 1 + epicTicketCounts[epicKey];
+        totalColumns += Math.ceil(totalItems / MAX_CARDS_PER_COLUMN);
       }
       maxColumns = Math.max(maxColumns, totalColumns);
     }
-    // Minimum 1 column
     sprintColumnWidths[sprintKey] = Math.max(1, maxColumns);
   }
 
-  // Filter out "Unknown" teams and numeric team IDs - only include teams that have valid names
   const teams = Array.from(teamSet)
     .filter(
       (team) =>
@@ -1095,17 +957,17 @@ async function createCapacityTable(
   const dataFontSize = TABLE_CONFIG.DATA_FONT_SIZE;
   let currentY = y;
 
-  // Create header row - Allocated first, then Assignee
+  // Create header row
   const headerAllocated = figma.createText();
   headerAllocated.characters = 'Allocated';
   headerAllocated.fontSize = headerFontSize;
   try {
     headerAllocated.fontName = { family: 'Inter', style: 'Bold' };
   } catch (e) {
-    console.warn('Could not set Bold font for table header, using default');
+    logger.warn('Could not set Bold font for table header, using default');
   }
   headerAllocated.fills = [{ type: 'SOLID', color: COLOR_CONFIG.TABLE_TEXT }];
-  headerAllocated.x = x; // First column
+  headerAllocated.x = x;
   headerAllocated.y = currentY;
   figma.currentPage.appendChild(headerAllocated);
   nodes.push(headerAllocated);
@@ -1116,7 +978,7 @@ async function createCapacityTable(
   try {
     headerAssignee.fontName = { family: 'Inter', style: 'Bold' };
   } catch (e) {
-    console.warn('Could not set Bold font for table header, using default');
+    logger.warn('Could not set Bold font for table header, using default');
   }
   headerAssignee.fills = [{ type: 'SOLID', color: COLOR_CONFIG.TABLE_TEXT }];
   // Position second column (estimate width of first column)
@@ -1132,7 +994,6 @@ async function createCapacityTable(
     return capacity[b] - capacity[a]; // Descending order
   });
 
-  // Create data rows
   for (const assignee of sortedAssignees) {
     const points = capacity[assignee];
     if (points === 0) continue; // Skip assignees with 0 points
@@ -1216,7 +1077,7 @@ async function processIssueBatch(
     }
 
     try {
-      // Check if we need to roll over to a new column (15 card limit)
+      // Roll over to new column if limit reached
       if (epicColumnCardCounts[epicKey] >= MAX_CARDS_PER_COLUMN) {
         // Reset height and card count for new column, increment column offset
         epicColumnHeights[epicKey] = 0;
@@ -1236,7 +1097,6 @@ async function processIssueBatch(
         importVerbose
       );
 
-      // Store sprint and epic link in plugin data for round-trip export
       // Extract sprint from issue if not provided, or use the sprint parameter
       const issueSprint = sprint || getSprintValue(issue);
       if (
@@ -1258,7 +1118,6 @@ async function processIssueBatch(
         frame.setPluginData('epicLink', issueEpicLink.trim());
       }
 
-      // Store team/studio value in plugin data for round-trip export
       // Extract team from issue (Custom field (Studio) or Custom field (Team))
       const issueTeam =
         issue['Custom field (Studio)'] || issue['Custom field (Team)'] || '';
@@ -1266,46 +1125,38 @@ async function processIssueBatch(
         frame.setPluginData('team', issueTeam.trim());
       }
 
-      // Store full description in plugin data for Theme, Epic, and Initiative
-      // This preserves the full description for export even though display is truncated
+      // Store full description in plugin data for export (display is truncated)
       if (
         mapped.templateType === 'theme' ||
         mapped.templateType === 'epic' ||
         mapped.templateType === 'initiative'
       ) {
-        // Get the original description from the issue (before truncation)
         const originalDescription = issue['Description'] || '';
         if (originalDescription && originalDescription.trim() !== '') {
-          // Format the description (remove Jira formatting) before storing
           const formattedDescription = formatJiraText(originalDescription);
           frame.setPluginData('fullDescription', formattedDescription);
         }
       }
 
-      // Verify issue key and template type were stored (for debugging)
       const storedIssueKey = frame.getPluginData('issueKey');
       const storedTemplateType = frame.getPluginData('templateType');
-      console.log(
-        `Created card: ${mapped.data.title || 'Untitled'}, frame.name: ${
-          frame.name
-        }, templateType: ${storedTemplateType}, issueKey: ${storedIssueKey}, sprint: ${issueSprint}, epicLink: ${issueEpicLink}`
-      );
       if (mapped.data.issueKey && !storedIssueKey) {
-        console.warn(
-          `Issue key not stored for card: ${mapped.data.title}, issueKey: ${mapped.data.issueKey}`
-        );
+        logger.warn('Issue key not stored for card', {
+          title: mapped.data.title,
+          issueKey: mapped.data.issueKey,
+        });
       }
       if (!storedTemplateType) {
-        console.warn(
-          `Template type not stored for card: ${mapped.data.title}, frame.name: ${frame.name}`
-        );
+        logger.warn('Template type not stored for card', {
+          title: mapped.data.title,
+          frameName: frame.name,
+        });
       }
 
       createdFrames.push(frame);
       epicColumnHeights[epicKey] += frame.height + spacing;
-      epicColumnCardCounts[epicKey] += 1; // Increment card count
-      // Update column height for the base column (epicIndex)
-      // This tracks the maximum height across all rollover columns for this epic
+      epicColumnCardCounts[epicKey] += 1;
+      // Track maximum height across all rollover columns for this epic
       columnHeights[columnIndex] = Math.max(
         columnHeights[columnIndex],
         epicColumnHeights[epicKey]
@@ -1313,7 +1164,15 @@ async function processIssueBatch(
       created++;
     } catch (error) {
       skipped++;
-      console.error('Error creating card:', error);
+      const errorInfo = extractErrorInfo(error);
+      logger.error(
+        'Error creating card',
+        error instanceof Error ? error : new Error(String(error)),
+        {
+          code: errorInfo.code,
+          issueKey: issue['Issue key'],
+        }
+      );
     }
   }
 
@@ -1388,7 +1247,7 @@ async function processTeamSprintTickets(
     const epicKey = sortedEpics[epicIndex];
     const epicColumnIssues = issuesByEpic[epicKey];
 
-    // Calculate X position for this epic column (accounting for previous epics' rollover columns)
+    // Calculate X position accounting for previous epics' rollover columns
     const baseEpicX = sprintX + cumulativeXOffset;
     let currentEpicX = baseEpicX;
 
@@ -1405,7 +1264,6 @@ async function processTeamSprintTickets(
         }
       }
 
-      // Check if this is the first sprint for this epic
       if (epicCardToPlace) {
         const epicIssueKey = epicCardToPlace['Issue key'] || '';
         const firstSprintKey = epicToFirstSprintKey[epicIssueKey];
@@ -1465,20 +1323,18 @@ async function processTeamSprintTickets(
             }
 
             createdFrames.push(frame);
-            epicCardHeights[epicKey] = frame.height + spacing; // Store epic card height separately
+            epicCardHeights[epicKey] = frame.height + spacing;
             epicHeights[epicKey] += frame.height + spacing;
             epicCardCounts[epicKey] += 1;
             currentY = Math.max(currentY, startY + epicHeights[epicKey]);
-            // Store reference to epic card for potential resizing
             epicLabelFrames[epicKey] = frame;
-            // Track epic card bottom for vertical line calculation
             const epicCardBottom = y + frame.height;
             if (updateLastCardBottom) {
               updateLastCardBottom(epicCardBottom);
             }
           }
         } else {
-          // Place simplified epic label in subsequent sprints (all sprints with tickets)
+          // Place simplified epic label in subsequent sprints
           const y = startY + epicHeights[epicKey];
           const labelFrame = await createEpicLabelCard(
             epicTitle,
@@ -1504,7 +1360,15 @@ async function processTeamSprintTickets(
           }
         }
       } catch (error) {
-        console.error('Error creating epic card/label:', error);
+        const errorInfo = extractErrorInfo(error);
+        logger.error(
+          'Error creating epic card/label',
+          error instanceof Error ? error : new Error(String(error)),
+          {
+            code: errorInfo.code,
+            epicKey,
+          }
+        );
       }
     }
 
@@ -1639,7 +1503,15 @@ async function processTeamSprintTickets(
             updateLastCardBottom(cardBottom);
           }
         } catch (error) {
-          console.error('Error creating card:', error);
+          const errorInfo = extractErrorInfo(error);
+          logger.error(
+            'Error creating card',
+            error instanceof Error ? error : new Error(String(error)),
+            {
+              code: errorInfo.code,
+              issueKey: issue['Issue key'],
+            }
+          );
         }
       }
     }
@@ -1647,27 +1519,17 @@ async function processTeamSprintTickets(
     // Resize epic label/card if it spans multiple columns
     if (epicLabelFrames[epicKey] && epicOffsets[epicKey] > 0) {
       const epicLabelFrame = epicLabelFrames[epicKey];
-      // Calculate total width to span all columns used by this epic
       const totalColumnsForThisEpic = 1 + epicOffsets[epicKey];
       const newWidth = totalColumnsForThisEpic * columnWidth - spacing;
       const oldWidth = epicLabelFrame.width;
-      const originalHeight = epicLabelFrame.height; // Store original height
-
-      // Resize the epic label frame to span all columns, keeping the same height
+      const originalHeight = epicLabelFrame.height;
       epicLabelFrame.resize(newWidth, originalHeight);
 
       // Update child elements to fill the new width
       const padding = CARD_CONFIG.PADDING;
       const iconSize = CARD_CONFIG.ICON_SIZE;
 
-      // Find and update elements:
-      // 1. Title text (first text node at top, left-aligned) - expand width
-      // 2. Icon (shape/vector/frame/group at top right) - right-justify
-      // 3. Priority rank (large number at bottom right) - right-justify
-      // 4. Status (text at bottom left) - stays at left
-      // 5. Field value text nodes (for full epic cards) - expand width
-
-      // Track which elements we've found
+      // Update elements to fill new width
       let titleTextFound = false;
       let iconFound = false;
       const iconRightEdge = newWidth - padding;
@@ -1675,35 +1537,19 @@ async function processTeamSprintTickets(
       for (const child of epicLabelFrame.children) {
         if (child.type === 'TEXT') {
           const textNode = child as TextNode;
-          // Title is typically the first text node at the top (y = padding)
           if (!titleTextFound && textNode.y === padding) {
-            // Title text - expand to fill new width (accounting for icon on right)
-            // Calculation: newWidth - left padding - icon size - right padding
             const titleMaxWidth = newWidth - padding - iconSize - padding;
-
-            // Get the original unwrapped text (remove newlines that were added by wrapTitleText)
             const originalText = textNode.characters.replace(/\n/g, ' ');
-
-            // Store original title height for comparison
             const originalTitleHeight = textNode.height;
 
-            // Remove newlines and update text - this allows the text to flow naturally at new width
             textNode.characters = originalText;
-
-            // Resize to new width - Figma will automatically wrap text based on the width
-            // We need to set a height that's large enough, then let it auto-adjust
-            // Use a large initial height, then resize based on actual content
-            textNode.resize(titleMaxWidth, 1000); // Large height to allow wrapping
-            // Now resize to actual height (Figma calculates this automatically)
+            textNode.resize(titleMaxWidth, 1000);
             const newTitleHeight = textNode.height;
-
-            // Adjust frame height if title height changed
             if (Math.abs(newTitleHeight - originalTitleHeight) > 1) {
               const heightDiff = newTitleHeight - originalTitleHeight;
               const newFrameHeight = originalHeight + heightDiff;
               epicLabelFrame.resize(newWidth, newFrameHeight);
             } else {
-              // Keep original frame dimensions
               epicLabelFrame.resize(newWidth, originalHeight);
             }
             titleTextFound = true;
@@ -1711,7 +1557,6 @@ async function processTeamSprintTickets(
             // Check if this is a field value text (for full epic cards)
             // Field values are resized to cardWidth - PADDING * 2, so check if width matches old width
             if (Math.abs(textNode.width - (oldWidth - padding * 2)) < 5) {
-              // This is likely a field value text - expand to new width
               // Store original height to prevent auto-growth
               const originalTextHeight = textNode.height;
               textNode.resize(newWidth - padding * 2, originalTextHeight);
@@ -1726,7 +1571,6 @@ async function processTeamSprintTickets(
                 // Status - stays at left, no change needed
               } else {
                 // Priority rank - always right-justify to new width
-                // Identify by: not at left (x !== padding) and at bottom (y > padding + some threshold)
                 // For epic labels, priority is always at bottom right
                 textNode.x = iconRightEdge - textNode.width;
               }
@@ -1740,14 +1584,11 @@ async function processTeamSprintTickets(
           child.type === 'STAR' ||
           child.type === 'LINE'
         ) {
-          // Icon shape - right-justify to new width
           if (!iconFound && child.y === padding) {
             child.x = iconRightEdge - iconSize;
             iconFound = true;
           }
         } else if (child.type === 'FRAME' || child.type === 'GROUP') {
-          // Icon might be in a frame or group - check if it's at the top right
-          // Icon is typically at y = padding and x near the right edge
           if (!iconFound && child.y === padding && child.x > oldWidth * 0.7) {
             child.x = iconRightEdge - iconSize;
             iconFound = true;
@@ -1792,72 +1633,107 @@ async function importCardsFromCSV(
   numFutureSprints: number = 6,
   futureSprintsColumns: number = 6
 ): Promise<void> {
-  console.log(
-    'importCardsFromCSV called with csvText length:',
-    (csvText && csvText.length) || 0
-  );
-  console.log('importCardsFromCSV called with jiraBaseUrl:', jiraBaseUrl);
-  console.log(
-    'importCardsFromCSV called with importVerbose:',
+  logger.info('importCardsFromCSV called', {
+    csvTextLength: (csvText && csvText.length) || 0,
+    jiraBaseUrl: jiraBaseUrl ? 'provided' : 'not provided',
     importVerbose,
-    'type:',
-    typeof importVerbose
-  );
-  console.log(
-    'importCardsFromCSV called with maxCardsPerColumn:',
     maxCardsPerColumn,
-    'type:',
-    typeof maxCardsPerColumn
-  );
-  console.log(
-    'importCardsFromCSV called with futureSprintsColumns:',
+    numFutureSprints,
     futureSprintsColumns,
-    'type:',
-    typeof futureSprintsColumns
-  );
+  });
 
-  try {
-    validateCSVText(csvText);
-  } catch (error) {
-    const errorMessage = getErrorMessage(error);
+  // Validate and normalize Jira URL if provided
+  let normalizedJiraUrl: string | undefined;
+  if (jiraBaseUrl) {
+    try {
+      normalizedJiraUrl = validateAndNormalizeJiraUrl(jiraBaseUrl);
+      logger.info('Jira URL validated and normalized', {
+        url: normalizedJiraUrl,
+      });
+    } catch (error) {
+      const errorInfo = extractErrorInfo(error);
+      logger.warn('Invalid Jira URL provided', {
+        url: jiraBaseUrl,
+        error: errorInfo.message,
+      });
+      figma.notify(
+        `⚠️ Invalid Jira URL: ${errorInfo.message}. Continuing without hyperlinks.`
+      );
+      // Continue without Jira URL rather than failing the entire import
+    }
+  }
+
+  // Enhanced CSV validation with comprehensive checks
+  const validationResult = validateCSVComprehensive(csvText);
+  if (!validationResult.isValid) {
+    const errorMessage = validationResult.errors.join('; ');
+    logger.error('CSV validation failed', undefined, {
+      errors: validationResult.errors,
+      warnings: validationResult.warnings,
+    });
     figma.notify(`❌ CSV validation error: ${errorMessage}`);
-    console.error('CSV validation error:', error);
     return;
+  }
+
+  // Log warnings if any
+  if (validationResult.warnings.length > 0) {
+    logger.warn('CSV validation warnings', {
+      warnings: validationResult.warnings,
+    });
   }
 
   let issues: Array<{ [key: string]: string }>;
   try {
     issues = parseCSV(csvText);
-    console.log(`Parsed ${issues.length} rows from CSV`);
+    logger.info(`Parsed ${issues.length} rows from CSV`, {
+      rowCount: issues.length,
+    });
   } catch (error) {
-    const errorMessage = getErrorMessage(error);
-    figma.notify(`❌ Error parsing CSV: ${errorMessage}`);
-    console.error('CSV parsing error:', error);
+    const errorInfo = extractErrorInfo(error);
+    logger.error(
+      'CSV parsing error',
+      error instanceof Error ? error : new Error(String(error)),
+      {
+        code: errorInfo.code,
+        context: errorInfo.context,
+      }
+    );
+    figma.notify(`❌ Error parsing CSV: ${errorInfo.message}`);
     return;
   }
 
   if (issues.length === 0) {
+    logger.warn('No issues parsed from CSV');
     figma.notify('❌ No data found in CSV file');
-    console.error('No issues parsed from CSV');
     return;
   }
 
-  // Set importing flag to suppress duplicate notifications during import
+  // Suppress duplicate notifications during import
   isImporting = true;
 
   try {
-    // Show initial progress
     figma.notify(
       `📊 Processing ${issues.length} issues... this may take a minute or two`,
       { timeout: 2000 }
     );
 
     try {
-      await ensureFontsLoaded();
+      // Font loading with retry logic
+      await withRetry(() => ensureFontsLoaded(), {
+        maxAttempts: 3,
+        delayMs: 500,
+        retryableErrors: [ErrorCode.FONT_LOAD_ERROR],
+      });
     } catch (error) {
-      const errorMessage = getErrorMessage(error);
-      figma.notify(`❌ Error loading fonts: ${errorMessage}`);
-      console.error('Font loading error:', error);
+      const errorInfo = extractErrorInfo(error);
+      logger.error(
+        'Font loading error',
+        error instanceof Error ? error : new Error(String(error)),
+        {
+          code: errorInfo.code,
+        }
+      );
+      figma.notify(`❌ Error loading fonts: ${errorInfo.message}`);
       return;
     }
 
@@ -1877,32 +1753,29 @@ async function importCardsFromCSV(
       epicIssues,
     } = preprocessed;
 
-    console.log('Preprocessing results:');
-    console.log(`  Teams found: ${teams.length}`, teams);
-    console.log(`  Sprint keys found: ${sprintKeys.length}`, sprintKeys);
-    console.log(`  Epic issues: ${epicIssues.length}`);
-    console.log(
-      '  Issues by team and sprint:',
-      Object.keys(issuesByTeamAndSprint)
-    );
-    console.log(
-      '  Issues by team and backlog:',
-      Object.keys(issuesByTeamAndBacklog)
-    );
+    logger.info('Preprocessing results', {
+      teamsFound: teams.length,
+      sprintKeysFound: sprintKeys.length,
+      epicIssues: epicIssues.length,
+      issuesByTeamAndSprint: Object.keys(issuesByTeamAndSprint).length,
+      issuesByTeamAndBacklog: Object.keys(issuesByTeamAndBacklog).length,
+    });
 
     if (teams.length === 0) {
       figma.notify('❌ No teams found in CSV file');
-      console.error('No teams identified from sprint names or issue fields');
-      console.error('Sample issue for debugging:', issues[0]);
+      logger.warn('No teams identified from sprint names or issue fields', {
+        sampleIssue: issues[0],
+      });
       return;
     }
 
     if (sprintKeys.length === 0) {
       figma.notify('⚠️ No valid sprints found, using single-team layout');
-      console.error(
-        'No valid sprints found. Sample sprint values:',
-        issues.slice(0, 10).map((issue) => getSprintValue(issue))
-      );
+      logger.warn('No valid sprints found', {
+        sampleSprintValues: issues
+          .slice(0, 10)
+          .map((issue) => getSprintValue(issue)),
+      });
       // Fall back to original single-team logic if no valid sprints
       // (Keep existing single-team code here for backward compatibility)
       return;
@@ -1964,7 +1837,7 @@ async function importCardsFromCSV(
         const issueType = (issue['Issue Type'] || '').trim().toLowerCase();
         if (issueType === 'epic') {
           const epicIssueKey = issue['Issue key'] || '';
-          // If this epic has a designated sprint (not backlog), exclude it from backlog
+          // Exclude epics with designated sprints from backlog
           if (epicIssueKey && epicToFirstSprintKey[epicIssueKey]) {
             return false; // Exclude epic from backlog if it has a designated sprint
           }
@@ -2000,7 +1873,6 @@ async function importCardsFromCSV(
       Math.max(6, maxBacklogColumns) * columnWidth - spacing;
 
     // Calculate sprint column positions (for vertical boxes and separators)
-    // We'll create sprint labels per team below
     let totalSprintWidth = 0;
     for (const sprintKey of sprintKeys) {
       const sprintColumnWidth =
@@ -2026,7 +1898,6 @@ async function importCardsFromCSV(
       const sprintColumnWidth =
         sprintColumnWidths[sprintKey] * columnWidth - spacing;
 
-      // If not the last sprint, calculate midpoint to next sprint
       if (i < sprintKeys.length - 1) {
         const nextSprintStart =
           currentSprintX + sprintColumnWidth + sprintSpacing;
@@ -2045,25 +1916,17 @@ async function importCardsFromCSV(
     const spacingBetweenTableAndLabel = LAYOUT_CONFIG.SPRINT_TABLE_SPACING;
 
     // Track the actual bottom of the last card across all teams (for vertical box height)
-    // This will be updated as each card is created
     let lastCardBottom = 0;
-    // Track the maxY returned from processTeamSprintTickets for each team/sprint
-    // This gives us the actual bottom position more accurately
     let maxMaxY = 0;
-    // Track actual columns used per sprint to update widths dynamically
     const actualSprintColumns: { [sprintKey: string]: number } = {};
-    // Track where cards actually start (for vertical box start position)
     let firstTeamCardsStartY: number | null = null;
-    // Track the bottom of the last team (where the next team would start)
-    // This is the most accurate way to determine where the vertical lines should end
     let lastTeamBottom = 0;
 
     for (let teamIndex = 0; teamIndex < teams.length; teamIndex++) {
       const team = teams[teamIndex];
       // Track this team's last card bottom - will be initialized when we know cards start position
       let teamLastCardBottom = 0;
-      // Track the maximum capacity table height for this team (across all sprints)
-      // This is needed to add spacing so cards don't overlap with the next team's table
+      // Track maximum capacity table height to prevent card overlap
       let teamMaxCapacityTableHeight = 0;
       const teamSprintLabelY =
         teamYOffset + LAYOUT_CONFIG.SPRINT_LABEL_Y_OFFSET;
@@ -2077,7 +1940,7 @@ async function importCardsFromCSV(
         const issueType = (issue['Issue Type'] || '').trim().toLowerCase();
         if (issueType === 'epic') {
           const epicIssueKey = issue['Issue key'] || '';
-          // If this epic has a designated sprint (not backlog), exclude it from backlog
+          // Exclude epics with designated sprints from backlog
           if (epicIssueKey && epicToFirstSprintKey[epicIssueKey]) {
             return false; // Exclude epic from backlog if it has a designated sprint
           }
@@ -2092,9 +1955,7 @@ async function importCardsFromCSV(
       try {
         backlogLabel.fontName = { family: 'Inter', style: 'Bold' };
       } catch (e) {
-        console.warn(
-          'Could not set Bold font for backlog label, using default'
-        );
+        logger.warn('Could not set Bold font for backlog label, using default');
       }
       backlogLabel.fills = [{ type: 'SOLID', color: COLOR_CONFIG.TEXT_DARK }];
 
@@ -2107,23 +1968,21 @@ async function importCardsFromCSV(
       figma.currentPage.appendChild(backlogLabel);
       createdFrames.push(backlogLabel as any);
 
-      // Create a dummy dates text to calculate the same spacing as sprint labels
-      // This ensures the backlog line aligns with sprint lines
+      // Create dummy dates text to match sprint label spacing
       const dummyDatesText = figma.createText();
       dummyDatesText.characters = 'MM/DD/YYYY - MM/DD/YYYY';
       try {
         await figma.loadFontAsync({ family: 'Inter', style: 'Regular' });
         dummyDatesText.fontName = { family: 'Inter', style: 'Regular' };
       } catch (e) {
-        console.warn('Could not set font for dummy dates, using default');
+        logger.warn('Could not set font for dummy dates, using default');
       }
       dummyDatesText.fontSize = LAYOUT_CONFIG.SPRINT_DATES_FONT_SIZE;
       // Don't append to page, just use for height calculation
       const datesTextHeight = dummyDatesText.height;
       dummyDatesText.remove(); // Clean up
 
-      // Add a line under the backlog label (aligned with sprint lines)
-      // Match the sprint line calculation: label.y + label.height + 5 + dates.height + lineSpacing
+      // Add line under backlog label (aligned with sprint lines)
       const backlogLine = figma.createLine();
       const backlogLineY =
         backlogLabel.y +
@@ -2144,17 +2003,12 @@ async function importCardsFromCSV(
       figma.currentPage.appendChild(backlogLine);
       createdFrames.push(backlogLine as any);
 
-      // Calculate starting Y position for backlog cards (after the line with spacing)
-      // This matches the sprint cardsStartY calculation
       const backlogCardsStartY = backlogLineY + spacingAfterLine;
 
-      // Track the first team's cards start position for vertical box positioning
       if (firstTeamCardsStartY === null) {
         firstTeamCardsStartY = backlogCardsStartY;
       }
 
-      // Initialize teamLastCardBottom to backlog cards start position
-      // This ensures proper positioning even if there are no cards
       if (teamLastCardBottom === 0) {
         teamLastCardBottom = backlogCardsStartY;
       }
@@ -2170,7 +2024,7 @@ async function importCardsFromCSV(
           epicIssues,
           epicToFirstSprintKey,
           createdFrames,
-          jiraBaseUrl,
+          normalizedJiraUrl || jiraBaseUrl || undefined,
           (bottom: number) => {
             lastCardBottom = Math.max(lastCardBottom, bottom);
             teamLastCardBottom = Math.max(teamLastCardBottom, bottom);
@@ -2211,7 +2065,6 @@ async function importCardsFromCSV(
         const sprintName = `${teamLabel} ${sprintKey}`;
 
         // Calculate capacity per assignee for this team's sprint
-        // Only show allocation table if there are tickets
         const capacity = calculateCapacity(teamSprintIssues);
 
         // Calculate table height first (if table exists and there are tickets)
@@ -2251,7 +2104,7 @@ async function importCardsFromCSV(
         try {
           sprintLabel.fontName = { family: 'Inter', style: 'Bold' };
         } catch (e) {
-          console.warn(
+          logger.warn(
             'Could not set Bold font for sprint label, using default'
           );
         }
@@ -2267,8 +2120,7 @@ async function importCardsFromCSV(
         createdFrames.push(sprintLabel as any);
 
         // Get sprint dates from the first issue in this sprint (if available)
-        // If no tickets, try to find dates from any issue with this sprint key across all teams
-        // If no dates found, calculate from sprint key (year-sprintNumber)
+        // Fallback: calculate dates from sprint key if not found in issues
         let sprintDates = 'MM/DD/YYYY - MM/DD/YYYY';
         if (teamSprintIssues.length > 0) {
           sprintDates = getSprintDates(teamSprintIssues[0], sprintKey);
@@ -2284,7 +2136,6 @@ async function importCardsFromCSV(
               break;
             }
           }
-          // If still no dates found, calculate from sprint key
           if (sprintDates === 'MM/DD/YYYY - MM/DD/YYYY') {
             sprintDates = getSprintDates({}, sprintKey);
           }
@@ -2297,7 +2148,7 @@ async function importCardsFromCSV(
           await figma.loadFontAsync({ family: 'Inter', style: 'Regular' });
           sprintDatesText.fontName = { family: 'Inter', style: 'Regular' };
         } catch (e) {
-          console.warn('Could not set font for sprint dates, using default');
+          logger.warn('Could not set font for sprint dates, using default');
         }
         sprintDatesText.fontSize = LAYOUT_CONFIG.SPRINT_DATES_FONT_SIZE;
         sprintDatesText.fills = [
@@ -2350,7 +2201,7 @@ async function importCardsFromCSV(
             epicIssues,
             epicToFirstSprintKey,
             createdFrames,
-            jiraBaseUrl,
+            normalizedJiraUrl || jiraBaseUrl || undefined,
             (bottom: number) => {
               lastCardBottom = Math.max(lastCardBottom, bottom);
               teamLastCardBottom = Math.max(teamLastCardBottom, bottom);
@@ -2380,7 +2231,7 @@ async function importCardsFromCSV(
       // Move to next team position (calculate based on this team's last card bottom)
       if (teamIndex < teams.length - 1) {
         // Position next team below this team's last card with spacing
-        // Also add space for the capacity table so cards don't overlap with the next team's table
+        // Add space for capacity table to prevent overlap
         // The table extends upward from the label, so we need to account for its height
         const capacityTableSpacing =
           teamMaxCapacityTableHeight > 0
@@ -2390,7 +2241,6 @@ async function importCardsFromCSV(
       }
 
       // Track the last team's bottom (this is where the next team would start)
-      // This is the most accurate bottom position for vertical lines
       lastTeamBottom = teamLastCardBottom;
     }
 
@@ -2399,8 +2249,6 @@ async function importCardsFromCSV(
     const verticalBoxStartY = firstTeamCardsStartY || fixedSprintLabelY;
 
     // Use the last team's bottom as the end of the vertical lines
-    // This is where the next team would start, which is the most accurate bottom position
-    // This matches the logic used to position teams: teamYOffset = teamLastCardBottom + teamSpacing + capacityTableSpacing
     let actualLastCardBottom = lastTeamBottom;
 
     // Fallback 1: Use maxMaxY if lastTeamBottom wasn't set properly
@@ -2426,26 +2274,17 @@ async function importCardsFromCSV(
         const isEpicLabel = frame.getPluginData('isEpicLabel') === 'true';
         // Check both card frames and epic label frames
         if (templateType || isEpicLabel) {
-          // This is a card or epic label frame - check its bottom edge
           const frameBottom = frame.y + frame.height;
           actualLastCardBottom = Math.max(actualLastCardBottom, frameBottom);
         }
       }
     }
 
-    // Only create vertical boxes if we have cards and a valid bottom position
     if (actualLastCardBottom > verticalBoxStartY) {
       const verticalBoxHeight = actualLastCardBottom - verticalBoxStartY;
       const verticalBoxWidth = COLOR_CONFIG.BORDER_WEIGHT; // Use border weight as width for skinny boxes
 
-      console.log('Vertical box calculation:', {
-        verticalBoxStartY,
-        actualLastCardBottom,
-        verticalBoxHeight,
-        lastTeamBottom,
-        maxMaxY,
-        lastCardBottom,
-      });
+      // Vertical box calculation complete
 
       // Create backlog vertical box (thin rectangle)
       const backlogVerticalBox = figma.createRectangle();
@@ -2554,52 +2393,40 @@ function extractCardData(frame: FrameNode): CardData | null {
           (node) => node.type === 'TEXT'
         ) as TextNode[];
         if (textNodes.length > 0) {
-          // Try to match based on frame structure or default to 'User Story'
-          // For now, default to 'User Story' as it's the most common type
-          // The actual type should be stored in plugin data, but if it's missing,
-          // we'll try to extract what we can
-          cardType = 'User Story'; // Default fallback for imported cards
-          console.warn(
-            `Card with issueKey ${issueKey} missing templateType in plugin data, defaulting to User Story`
+          // Default to User Story if template type missing from plugin data
+          cardType = 'User Story';
+          logger.warn(
+            'Card missing templateType in plugin data, defaulting to User Story',
+            {
+              issueKey,
+            }
           );
         } else {
-          // Not one of our template cards
           return null;
         }
       } else {
-        // Not one of our template cards
         return null;
       }
     }
   }
 
-  // Convert display name to template key for lookups in TEMPLATES
   let templateKey = getTemplateKeyFromDisplayName(cardType);
   if (!templateKey) {
-    // If we can't identify the type but have an issueKey, try to infer from structure
     const issueKey = frame.getPluginData('issueKey');
     if (issueKey && issueKey.trim() !== '') {
-      // This is an imported card - use a reasonable default
-      // Check frame structure to try to infer type, or default to 'userStory'
-      templateKey = 'userStory'; // Default fallback
-      cardType = 'User Story'; // Update cardType to match
-      console.warn(
-        `Could not identify card type for imported card with issueKey ${issueKey}, defaulting to User Story. Frame name: ${
-          frame.name
-        }, templateType from data: ${frame.getPluginData('templateType')}`
-      );
+      templateKey = 'userStory';
+      cardType = 'User Story';
+      logger.warn('Could not identify card type, defaulting to User Story', {
+        issueKey,
+        frameName: frame.name,
+        templateType: frame.getPluginData('templateType'),
+      });
     } else {
-      // Invalid card type and no issueKey, skip this card
-      console.log(
-        `Skipping frame ${frame.name} - not a template card and no issueKey`
-      );
       return null;
     }
   }
 
   const fields: { label: string; value: string }[] = [];
-
-  // Find all text nodes in the frame
   const textNodes = frame.findAll((node) => node.type === 'TEXT') as TextNode[];
 
   // Sort by Y position to get fields in order
@@ -3155,8 +2982,7 @@ function isDefaultValue(value: string, defaultValue: string | null): boolean {
     }
   }
 
-  // Check for concatenated descriptions that contain only default values
-  // e.g., "As a [user type], I want [feature], so that [benefit]"
+  // Check for concatenated descriptions with only default values
   if (
     normalizedValue.includes('[user type]') &&
     normalizedValue.includes('[feature]') &&
@@ -3166,7 +2992,6 @@ function isDefaultValue(value: string, defaultValue: string | null): boolean {
   }
 
   // Check for test descriptions with only default values
-  // e.g., "Given [initial context], When [event occurs], Then [expected outcome]"
   if (
     normalizedValue.includes('[initial context]') &&
     normalizedValue.includes('[event occurs]') &&
@@ -3195,8 +3020,7 @@ function cleanCardData(cardData: {
   const cleanedFields = cardData.fields.map((field) => {
     const defaultValue = getDefaultValueForField(cardData.type, field.label);
 
-    // Always treat "?" and "#" as default values for Story Points and Priority Rank
-    // even if there's no default value defined in the template
+    // Treat "?" and "#" as default values for Story Points and Priority Rank
     if (
       (field.label === 'Story Points' || field.label === 'Priority Rank') &&
       (field.value.trim() === '?' || field.value.trim() === '#')
@@ -3263,8 +3087,7 @@ function getCanonicalFieldOrder(): string[] {
 function exportCardsToCSV(filterNew: boolean = false): void {
   const cards: CardData[] = [];
 
-  // Find all frames on the current page that match our template names
-  // Use Set for O(1) lookup performance instead of O(n) array.includes()
+  // Find frames matching template names (using Set for O(1) lookup)
   const templateNames = new Set([
     'Theme',
     'Initiative',
@@ -3276,7 +3099,6 @@ function exportCardsToCSV(filterNew: boolean = false): void {
     'Test',
   ]);
 
-  // Find frames by name (primary method) or by plugin data templateType (fallback for imported cards)
   const allFrames = figma.currentPage.findAll(
     (node) => node.type === 'FRAME'
   ) as FrameNode[];
@@ -3288,37 +3110,26 @@ function exportCardsToCSV(filterNew: boolean = false): void {
       return false;
     }
 
-    // Check frame name first (primary method for template-created cards)
     if (templateNames.has(frame.name)) {
       return true;
     }
 
-    // Check plugin data for template type (ensures imported cards are found)
     const templateType = frame.getPluginData('templateType');
     if (templateType && templateNames.has(templateType)) {
       return true;
     }
 
-    // Also check if frame has issueKey (indicates it's an imported card)
-    // This is a fallback for cards that might not have templateType set correctly
+    // Fallback: check for issueKey (indicates imported card)
     const issueKey = frame.getPluginData('issueKey');
     if (issueKey && issueKey.trim() !== '') {
-      // This is definitely an imported card - include it
-      // extractCardData will handle type inference
       return true;
     }
 
-    // Last resort: check if frame structure looks like one of our cards
-    // Our cards have specific characteristics:
-    // - They are frames with text nodes
-    // - They have a specific width (CARD_CONFIG.WIDTH = 500)
-    // - They have rounded corners
+    // Last resort: check frame structure (width ~500px, rounded corners, text nodes)
     const textNodes = frame.findAll(
       (node) => node.type === 'TEXT'
     ) as TextNode[];
     if (textNodes.length >= 2) {
-      // Has multiple text nodes (title + at least one field)
-      // Check if it has our card characteristics
       const cornerRadius =
         typeof frame.cornerRadius === 'number' ? frame.cornerRadius : 0;
       const frameWidth = typeof frame.width === 'number' ? frame.width : 0;
@@ -3326,13 +3137,6 @@ function exportCardsToCSV(filterNew: boolean = false): void {
       const hasReasonableWidth = frameWidth > 400 && frameWidth < 600; // Close to our 500px width
       if (hasRoundedCorners && hasReasonableWidth) {
         // This looks like one of our cards - include it
-        console.log(
-          `Including frame "${String(
-            frame.name
-          )}" based on structure (width: ${frameWidth}, corners: ${cornerRadius}, textNodes: ${
-            textNodes.length
-          })`
-        );
         return true;
       }
     }
@@ -3340,31 +3144,15 @@ function exportCardsToCSV(filterNew: boolean = false): void {
     return false;
   });
 
-  // Log for debugging if no frames found
+  // Log if no frames found (important for troubleshooting)
   if (frames.length === 0) {
     if (allFrames.length > 0) {
-      console.log(
-        'No template cards found. All frames on page:',
-        allFrames.map((f) => ({
-          name: f.name,
-          templateType: f.getPluginData('templateType'),
-          issueKey: f.getPluginData('issueKey'),
-          hasTextNodes: f.findAll((n) => n.type === 'TEXT').length > 0,
-        }))
-      );
+      logger.warn('No template cards found for export', {
+        totalFrames: allFrames.length,
+      });
     } else {
-      console.log('No frames found on page at all');
+      logger.info('No frames found on page for export');
     }
-  } else {
-    // Log what we found for debugging
-    console.log(
-      `Found ${frames.length} potential card(s):`,
-      frames.map((f) => ({
-        name: f.name,
-        templateType: f.getPluginData('templateType'),
-        issueKey: f.getPluginData('issueKey'),
-      }))
-    );
   }
 
   // Extract data from each card
@@ -3377,14 +3165,11 @@ function exportCardsToCSV(filterNew: boolean = false): void {
 
     const cardData = extractCardData(frame);
     if (!cardData) {
-      console.warn(
-        `extractCardData returned null for frame:`,
-        frame.name,
-        'templateType:',
-        frame.getPluginData('templateType'),
-        'issueKey:',
-        frame.getPluginData('issueKey')
-      );
+      logger.warn('extractCardData returned null for frame', {
+        frameName: frame.name,
+        templateType: frame.getPluginData('templateType'),
+        issueKey: frame.getPluginData('issueKey'),
+      });
       continue;
     }
     if (cardData) {
@@ -3401,53 +3186,39 @@ function exportCardsToCSV(filterNew: boolean = false): void {
       // Get title from extracted card data (which comes from the actual text node)
       const title = cardData.title;
 
-      // For user stories, concatenate As a/I want/So that into Description
+      // Concatenate user story fields into Description
       if (cardData.type === 'User Story') {
         const asA = cardData.fields.find((f) => f.label === 'As a');
         const iWant = cardData.fields.find((f) => f.label === 'I want');
         const soThat = cardData.fields.find((f) => f.label === 'So that');
 
-        // If we have As a/I want/So that, concatenate them into Description
         if (asA && iWant && soThat) {
-          // Format: "As a [user type], I want [feature], so that [benefit]"
           const description = `As a ${asA.value}, I want ${iWant.value}, so that ${soThat.value}`;
-
-          // Remove As a/I want/So that fields
           cardData.fields = cardData.fields.filter(
             (f) =>
               f.label !== 'As a' &&
               f.label !== 'I want' &&
               f.label !== 'So that'
           );
-
-          // Remove any existing Description field (in case it was imported)
           cardData.fields = cardData.fields.filter(
             (f) => f.label !== 'Description'
           );
-
-          // Add Description at the beginning with concatenated values
           cardData.fields.unshift({ label: 'Description', value: description });
         }
       }
 
-      // For test tickets, concatenate Given/When/Then into Description
+      // Concatenate test fields into Description
       if (cardData.type === 'Test') {
         const given = cardData.fields.find((f) => f.label === 'Given');
         const when = cardData.fields.find((f) => f.label === 'When');
         const then = cardData.fields.find((f) => f.label === 'Then');
 
-        // If we have Given/When/Then, concatenate them into Description
         if (given && when && then) {
-          // Format: "Given [initial context], When [event occurs], Then [expected outcome]"
           const description = `Given ${given.value}, When ${when.value}, Then ${then.value}`;
-
-          // Remove Given/When/Then fields
           cardData.fields = cardData.fields.filter(
             (f) =>
               f.label !== 'Given' && f.label !== 'When' && f.label !== 'Then'
           );
-
-          // Remove any existing Description field (in case it was imported)
           cardData.fields = cardData.fields.filter(
             (f) => f.label !== 'Description'
           );
@@ -3479,26 +3250,22 @@ function exportCardsToCSV(filterNew: boolean = false): void {
     return;
   }
 
-  // Map all fields to CSV column names and collect unique CSV columns
-  // Maps CSV column name to array of internal field labels (for fields that map to same column)
+  // Map fields to CSV columns (handles multiple fields mapping to same column)
   const csvColumnMap = new Map<string, string[]>();
   const allCSVColumns = new Set<string>();
 
   cards.forEach((card) => {
     card.fields.forEach((field) => {
-      // Skip fields with invalid labels (like "?" or empty)
       if (!field.label || field.label.trim() === '' || field.label === '?') {
         return;
       }
 
       const csvColumn = mapFieldToCSVColumn(field.label, card.type);
 
-      // Skip if mapping returns invalid column name
       if (!csvColumn || csvColumn.trim() === '' || csvColumn === '?') {
         return;
       }
 
-      // Handle fields that map to the same CSV column
       if (!csvColumnMap.has(csvColumn)) {
         csvColumnMap.set(csvColumn, []);
       }
@@ -3510,44 +3277,30 @@ function exportCardsToCSV(filterNew: boolean = false): void {
       allCSVColumns.add(csvColumn);
     });
 
-    // Add Issue key column if any card has an issue key
-    // This enables round-trip export to Jira for imported cards
+    // Add columns for round-trip export to Jira
     if (card.issueKey && card.issueKey.trim() !== '') {
       allCSVColumns.add('Issue key');
     }
-
-    // Add Sprint column if any card has a sprint value
-    // This preserves sprint information for round-trip export
     if (card.sprint && card.sprint.trim() !== '') {
       allCSVColumns.add('Sprint');
     }
-
-    // Add Epic Link column if any card has an epic link
-    // This preserves epic link information for round-trip export
     if (card.epicLink && card.epicLink.trim() !== '') {
       allCSVColumns.add('Custom field (Epic Link)');
     }
-
-    // Add Team/Studio column if any card has a team value
-    // This preserves team/studio information for round-trip export
     if (card.team && card.team.trim() !== '') {
       allCSVColumns.add('Custom field (Studio)');
     }
   });
 
-  // Build ordered list of CSV columns
-  // Priority order: Summary, Issue key, Issue Type, then other fields
+  // Build ordered CSV columns: Summary, Issue key, Issue Type, then others
   const orderedCSVColumns: string[] = [];
   const remainingColumns: string[] = [];
 
-  // Always include these columns first
-  orderedCSVColumns.push('Summary'); // Always include Summary (title)
+  orderedCSVColumns.push('Summary');
   if (allCSVColumns.has('Issue key')) {
     orderedCSVColumns.push('Issue key');
   }
-  orderedCSVColumns.push('Issue Type'); // Always include Issue Type
-
-  // Add Sprint, Epic Link, and Team/Studio early in the order (important for round-trip)
+  orderedCSVColumns.push('Issue Type');
   if (allCSVColumns.has('Sprint')) {
     orderedCSVColumns.push('Sprint');
   }
@@ -3558,7 +3311,6 @@ function exportCardsToCSV(filterNew: boolean = false): void {
     orderedCSVColumns.push('Custom field (Studio)');
   }
 
-  // Add remaining columns in a logical order
   const priorityOrder = [
     'Description',
     'Status',
@@ -3653,7 +3405,7 @@ function exportCardsToCSV(filterNew: boolean = false): void {
 // Set up message handler once with proper typing
 figma.ui.onmessage = async (msg: PluginMessage) => {
   // Log for debugging
-  console.log('Received message:', msg);
+  logger.info('Received message', { type: msg.type });
 
   if (msg.type === 'insert-template') {
     // TypeScript now knows msg.templateType exists
@@ -3663,29 +3415,33 @@ figma.ui.onmessage = async (msg: PluginMessage) => {
       const template = TEMPLATES[templateType];
       figma.notify(`✅ ${template.title} template inserted!`);
     } catch (error) {
-      const errorMessage = getErrorMessage(error);
-      figma.notify(`❌ Error inserting template: ${errorMessage}`);
-      console.error('Error inserting template:', error);
+      const errorInfo = extractErrorInfo(error);
+      logger.error(
+        'Error inserting template',
+        error instanceof Error ? error : new Error(String(error)),
+        {
+          code: errorInfo.code,
+          templateType: msg.templateType,
+        }
+      );
+      figma.notify(`❌ Error inserting template: ${errorInfo.message}`);
     }
   } else if (msg.type === 'import-csv') {
     // TypeScript now knows msg.csvText exists
     try {
-      console.log('Starting CSV import, data length:', msg.csvText.length);
-      console.log('Jira Base URL received:', msg.jiraBaseUrl);
+      logger.info('Starting CSV import', {
+        dataLength: msg.csvText.length,
+        jiraBaseUrl: msg.jiraBaseUrl ? 'provided' : 'not provided',
+        importVerbose: msg.importVerbose,
+        maxCardsPerColumn: msg.maxCardsPerColumn,
+        numFutureSprints: msg.numFutureSprints,
+        futureSprintsColumns: msg.futureSprintsColumns,
+      });
       const importVerbose =
         msg.importVerbose !== undefined ? msg.importVerbose : false;
       const maxCardsPerColumn = msg.maxCardsPerColumn || 5;
       const numFutureSprints = msg.numFutureSprints || 6;
       const futureSprintsColumns = msg.futureSprintsColumns || 6;
-      console.log(
-        'Import CSV - importVerbose value:',
-        importVerbose,
-        'type:',
-        typeof importVerbose
-      );
-      console.log('Import CSV - maxCardsPerColumn:', maxCardsPerColumn);
-      console.log('Import CSV - numFutureSprints:', numFutureSprints);
-      console.log('Import CSV - futureSprintsColumns:', futureSprintsColumns);
       await importCardsFromCSV(
         msg.csvText,
         msg.jiraBaseUrl,
@@ -3695,18 +3451,32 @@ figma.ui.onmessage = async (msg: PluginMessage) => {
         futureSprintsColumns
       );
     } catch (error) {
-      const errorMessage = getErrorMessage(error);
-      figma.notify(`❌ Error importing CSV: ${errorMessage}`);
-      console.error('CSV import error:', error);
+      const errorInfo = extractErrorInfo(error);
+      logger.error(
+        'CSV import error',
+        error instanceof Error ? error : new Error(String(error)),
+        {
+          code: errorInfo.code,
+          context: errorInfo.context,
+        }
+      );
+      figma.notify(`❌ Error importing CSV: ${errorInfo.message}`);
     }
   } else if (msg.type === 'export-csv') {
     try {
       const filterNew = msg.filterNew || false;
       exportCardsToCSV(filterNew);
     } catch (error) {
-      const errorMessage = getErrorMessage(error);
-      figma.notify(`❌ Error exporting CSV: ${errorMessage}`);
-      console.error('CSV export error:', error);
+      const errorInfo = extractErrorInfo(error);
+      logger.error(
+        'CSV export error',
+        error instanceof Error ? error : new Error(String(error)),
+        {
+          code: errorInfo.code,
+          filterNew: msg.filterNew,
+        }
+      );
+      figma.notify(`❌ Error exporting CSV: ${errorInfo.message}`);
     }
   } else if (msg.type === 'get-settings') {
     try {
@@ -3732,7 +3502,14 @@ figma.ui.onmessage = async (msg: PluginMessage) => {
         futureSprintsColumns: futureSprintsColumns || 6,
       } as UIMessage);
     } catch (error) {
-      console.error('Error loading settings:', error);
+      const errorInfo = extractErrorInfo(error);
+      logger.error(
+        'Error loading settings',
+        error instanceof Error ? error : new Error(String(error)),
+        {
+          code: errorInfo.code,
+        }
+      );
       figma.ui.postMessage({
         type: 'settings-loaded',
         jiraBaseUrl: undefined,
@@ -3750,7 +3527,14 @@ figma.ui.onmessage = async (msg: PluginMessage) => {
         jiraBaseUrl: savedUrl || undefined,
       } as UIMessage);
     } catch (error) {
-      console.error('Error loading Jira URL:', error);
+      const errorInfo = extractErrorInfo(error);
+      logger.error(
+        'Error loading Jira URL',
+        error instanceof Error ? error : new Error(String(error)),
+        {
+          code: errorInfo.code,
+        }
+      );
       figma.ui.postMessage({
         type: 'jira-url-loaded',
         jiraBaseUrl: undefined,
@@ -3760,13 +3544,27 @@ figma.ui.onmessage = async (msg: PluginMessage) => {
     try {
       await figma.clientStorage.setAsync('jiraBaseUrl', msg.jiraBaseUrl);
     } catch (error) {
-      console.error('Error saving Jira URL:', error);
+      const errorInfo = extractErrorInfo(error);
+      logger.error(
+        'Error saving Jira URL',
+        error instanceof Error ? error : new Error(String(error)),
+        {
+          code: errorInfo.code,
+        }
+      );
     }
   } else if (msg.type === 'set-import-verbose') {
     try {
       await figma.clientStorage.setAsync('importVerbose', msg.importVerbose);
     } catch (error) {
-      console.error('Error saving Import Verbose setting:', error);
+      const errorInfo = extractErrorInfo(error);
+      logger.error(
+        'Error saving Import Verbose setting',
+        error instanceof Error ? error : new Error(String(error)),
+        {
+          code: errorInfo.code,
+        }
+      );
     }
   } else if (msg.type === 'set-max-cards-per-column') {
     try {
@@ -3775,7 +3573,14 @@ figma.ui.onmessage = async (msg: PluginMessage) => {
         msg.maxCardsPerColumn
       );
     } catch (error) {
-      console.error('Error saving Max Cards Per Column setting:', error);
+      const errorInfo = extractErrorInfo(error);
+      logger.error(
+        'Error saving Max Cards Per Column setting',
+        error instanceof Error ? error : new Error(String(error)),
+        {
+          code: errorInfo.code,
+        }
+      );
     }
   } else if (msg.type === 'set-num-future-sprints') {
     try {
@@ -3784,7 +3589,14 @@ figma.ui.onmessage = async (msg: PluginMessage) => {
         msg.numFutureSprints
       );
     } catch (error) {
-      console.error('Error saving Number of Future Sprints setting:', error);
+      const errorInfo = extractErrorInfo(error);
+      logger.error(
+        'Error saving Number of Future Sprints setting',
+        error instanceof Error ? error : new Error(String(error)),
+        {
+          code: errorInfo.code,
+        }
+      );
     }
   } else if (msg.type === 'set-future-sprints-columns') {
     try {
@@ -3793,7 +3605,14 @@ figma.ui.onmessage = async (msg: PluginMessage) => {
         msg.futureSprintsColumns
       );
     } catch (error) {
-      console.error('Error saving Future Sprints Columns setting:', error);
+      const errorInfo = extractErrorInfo(error);
+      logger.error(
+        'Error saving Future Sprints Columns setting',
+        error instanceof Error ? error : new Error(String(error)),
+        {
+          code: errorInfo.code,
+        }
+      );
     }
   } else if (msg.type === 'close') {
     figma.closePlugin();
@@ -4028,14 +3847,14 @@ async function handleCardDuplication(): Promise<boolean> {
                     textNodes[0] = newTitleNode;
                   }
 
-                  console.log(
-                    `Removed hyperlink from copied card by recreating text node: ${duplicateFrame.name}`
-                  );
+                  // Hyperlink removed from duplicate card
                 }
               }
             } catch (e) {
               // Hyperlink removal failed, log but continue
-              console.warn('Error removing hyperlink from copied card:', e);
+              logger.warn('Error removing hyperlink from copied card', {
+                error: e instanceof Error ? e.message : String(e),
+              });
             }
           }
 
@@ -4149,16 +3968,16 @@ async function handleCardDuplication(): Promise<boolean> {
               titleNode.remove();
             }
 
-            console.log(
-              `Removed hyperlink from copied card (marked as copy): ${copyFrame.name}`
-            );
+            // Hyperlink removed from duplicate card
             processedCards.add(frameId);
             duplicatesProcessed = true;
           }
         }
       } catch (e) {
         // Log error but don't throw - continue processing other cards
-        console.warn('Error removing hyperlink from copied card:', e);
+        logger.warn('Error removing hyperlink from copied card', {
+          error: e instanceof Error ? e.message : String(e),
+        });
       }
     }
   }
@@ -4166,10 +3985,7 @@ async function handleCardDuplication(): Promise<boolean> {
   return duplicatesProcessed;
 }
 
-// Track processed cards to avoid duplicate notifications
 const processedCards = new Set<string>();
-
-// Flag to suppress duplicate notifications during import
 let isImporting = false;
 
 /**
@@ -4177,31 +3993,22 @@ let isImporting = false;
  * Only logs when duplicates are actually found and processed.
  */
 async function checkForDuplicates(): Promise<void> {
-  const duplicatesFound = await handleCardDuplication();
-  // Only log if duplicates were actually processed (for debugging)
-  // Removed verbose logging to reduce console spam
+  await handleCardDuplication();
 }
 
-// Run duplicate check immediately on plugin load (silently)
 checkForDuplicates();
 
-// Listen for selection changes to detect when cards are duplicated
 figma.on('selectionchange', () => {
-  // Skip duplicate check during import
   if (isImporting) {
     return;
   }
-  // Small delay to ensure duplication is complete before checking
   setTimeout(() => {
     checkForDuplicates();
   }, TIMING_CONFIG.DUPLICATE_CHECK_DELAY);
 });
 
-// Also check periodically to catch any missed duplicates (especially from copy/paste)
-// This ensures we catch duplicates even if selection doesn't change
-// Reduced frequency to avoid unnecessary checks
+// Periodic check to catch duplicates from copy/paste
 setInterval(() => {
-  // Skip duplicate check during import
   if (!isImporting) {
     checkForDuplicates();
   }
@@ -4230,6 +4037,13 @@ figma.showUI(__html__, {
       jiraBaseUrl: savedUrl || undefined,
     } as UIMessage);
   } catch (error) {
-    console.error('Error loading Jira URL on startup:', error);
+    const errorInfo = extractErrorInfo(error);
+    logger.error(
+      'Error loading Jira URL on startup',
+      error instanceof Error ? error : new Error(String(error)),
+      {
+        code: errorInfo.code,
+      }
+    );
   }
 })();

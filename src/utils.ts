@@ -2,6 +2,9 @@
 
 import { TEMPLATES } from './templates';
 import { VALIDATION_CONFIG } from './config';
+import { validateCSVComprehensive } from './validation';
+import { extractErrorInfo } from './errors';
+import { logger } from './logger';
 
 /**
  * Font loading cache to avoid reloading fonts multiple times
@@ -17,9 +20,7 @@ export async function ensureFontsLoaded(): Promise<void> {
       figma.loadFontAsync({ family: 'Inter', style: 'Bold' }),
       figma.loadFontAsync({ family: 'Inter', style: 'Medium' }),
       figma.loadFontAsync({ family: 'Inter', style: 'Regular' }),
-    ]).then(() => {
-      // Fonts loaded successfully
-    });
+    ]).then(() => undefined);
   }
   return fontsLoadedPromise;
 }
@@ -69,18 +70,13 @@ export function validateCoordinate(
 
 /**
  * Validates CSV text input.
+ * @deprecated Use validateCSVComprehensive from validation.ts for enhanced validation
+ * This function is kept for backward compatibility
  */
 export function validateCSVText(csvText: string): void {
-  if (!csvText || typeof csvText !== 'string') {
-    throw new Error('CSV text must be a non-empty string');
-  }
-  if (csvText.trim() === '') {
-    throw new Error('CSV text cannot be empty');
-  }
-  if (csvText.length > VALIDATION_CONFIG.MAX_CSV_SIZE) {
-    throw new Error(
-      `CSV file is too large: ${csvText.length} bytes. Maximum size is ${VALIDATION_CONFIG.MAX_CSV_SIZE} bytes (${VALIDATION_CONFIG.MAX_CSV_SIZE / (1024 * 1024)}MB).`
-    );
+  const result = validateCSVComprehensive(csvText);
+  if (!result.isValid) {
+    throw new Error(result.errors.join('; '));
   }
 }
 
@@ -95,9 +91,10 @@ export function sanitizeFieldValue(
     return '';
   }
   if (value.length > maxLength) {
-    console.warn(
-      `Field value truncated from ${value.length} to ${maxLength} characters`
-    );
+    logger.warn('Field value truncated', {
+      originalLength: value.length,
+      maxLength,
+    });
     return value.substring(0, maxLength);
   }
   return value;
@@ -248,15 +245,12 @@ export function wrapTitleText(
 
 /**
  * Safely extracts error message from unknown error type.
+ * @deprecated Use extractErrorInfo from errors.ts for structured error handling
+ * This function is kept for backward compatibility
  */
 export function getErrorMessage(error: unknown): string {
-  if (error instanceof Error) {
-    return error.message;
-  }
-  if (typeof error === 'string') {
-    return error;
-  }
-  return 'An unknown error occurred';
+  const errorInfo = extractErrorInfo(error);
+  return errorInfo.message;
 }
 
 /**
