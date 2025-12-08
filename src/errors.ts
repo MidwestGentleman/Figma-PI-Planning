@@ -28,8 +28,7 @@ export class PluginError extends Error {
     super(message);
     this.name = 'PluginError';
     
-    // Maintains proper stack trace for where error was thrown (V8 only)
-    // TypeScript doesn't recognize captureStackTrace, so we use type assertion
+    // Maintains proper stack trace (V8 only)
     const ErrorConstructor = Error as unknown as {
       captureStackTrace?: (error: Error, constructor: typeof PluginError) => void;
     };
@@ -44,7 +43,6 @@ export class PluginError extends Error {
   toUserMessage(): string {
     const baseMessage = this.message;
     
-    // Add context information if available
     if (this.context) {
       const contextStr = Object.entries(this.context)
         .map(([key, value]) => `${key}: ${value}`)

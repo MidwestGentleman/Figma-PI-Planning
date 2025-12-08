@@ -18,6 +18,7 @@ import {
   wrapTitleText,
   truncateAssignee,
 } from './utils';
+import { logger } from './logger';
 
 /**
  * Creates an icon shape based on template type.
@@ -43,10 +44,8 @@ function createIconShape(
       // Fallback if font not available
     }
     bugText.fills = [{ type: 'SOLID', color: { r: 0.9, g: 0.4, b: 0.4 } }];
-    // Right-align the X to match other icons (which fill the icon space from left to right)
-    // Position is calculated after text is created to get accurate dimensions
-    bugText.x = iconX + iconSize - bugText.width; // Right-align within icon space
-    bugText.y = iconY + (iconSize - bugText.height) / 2; // Vertically center
+    bugText.x = iconX + iconSize - bugText.width;
+    bugText.y = iconY + (iconSize - bugText.height) / 2;
     iconShape = bugText;
   } else if (templateType === 'theme') {
     const rect = figma.createRectangle();
@@ -226,7 +225,7 @@ export async function createEpicLabelCard(
   try {
     titleText.fontName = { family: 'Inter', style: 'Bold' };
   } catch (e) {
-    console.warn('Could not set Bold font for title, using default');
+    logger.warn('Could not set Bold font for title, using default');
   }
   titleText.fills = [
     {
@@ -270,38 +269,24 @@ export async function createEpicLabelCard(
   }
   
   const titleHeight = lineCount * lineHeight;
-  // Set the calculated height to ensure accurate spacing
   titleText.resize(maxTitleWidth, titleHeight);
   
-  // Set hyperlink AFTER all text operations are complete (resize, wrapping, etc.)
-  // This ensures the hyperlink is set on the final text content and persists
+  // Set hyperlink after all text operations complete
   const epicIssueKey = issueKey;
-  console.log(`Epic label hyperlink check - issueKey: "${epicIssueKey}", jiraBaseUrl: "${jiraBaseUrl}"`);
   if (epicIssueKey && epicIssueKey.trim() !== '' && jiraBaseUrl && jiraBaseUrl.trim() !== '') {
     try {
-      // Ensure the base URL has a protocol (https://) and doesn't have a trailing slash
       let baseUrl = jiraBaseUrl.trim().replace(/\/$/, '');
-      // Add https:// if no protocol is present
       if (!baseUrl.match(/^https?:\/\//i)) {
         baseUrl = `https://${baseUrl}`;
       }
       const url = `${baseUrl}/browse/${epicIssueKey.trim()}`;
-      console.log(`Setting hyperlink for epic label ${epicIssueKey} with URL: ${url}`);
-      console.log(`Text length: ${titleText.characters.length}`);
       titleText.setRangeHyperlink(0, titleText.characters.length, {
         type: 'URL',
         value: url,
       });
-      console.log(`Hyperlink set successfully for epic label ${epicIssueKey}`);
     } catch (e) {
-      console.error('Could not set hyperlink on epic label title:', e);
+      logger.error('Could not set hyperlink on epic label title', e instanceof Error ? e : new Error(String(e)));
       // Don't throw - continue with card creation even if hyperlink fails
-    }
-  } else {
-    if (epicIssueKey && epicIssueKey.trim() !== '') {
-      console.log(`Epic label issue key ${epicIssueKey} found but no valid Jira Base URL provided (jiraBaseUrl: "${jiraBaseUrl}")`);
-    } else if (jiraBaseUrl && jiraBaseUrl.trim() !== '') {
-      console.log(`Jira Base URL provided but no epic label issue key found (issueKey: "${epicIssueKey}")`);
     }
   }
   
@@ -316,7 +301,7 @@ export async function createEpicLabelCard(
   try {
     largeNumberText.fontName = { family: 'Inter', style: 'Bold' };
   } catch (e) {
-    console.warn('Could not set Bold font for priority rank, using default');
+    logger.warn('Could not set Bold font for priority rank, using default');
   }
   largeNumberText.fills = [
     {
@@ -338,7 +323,7 @@ export async function createEpicLabelCard(
   try {
     statusText.fontName = { family: 'Inter', style: 'Bold' };
   } catch (e) {
-    console.warn('Could not set Bold font for status, using default');
+    logger.warn('Could not set Bold font for status, using default');
   }
   statusText.fills = [
     {
@@ -499,7 +484,7 @@ export async function createTemplateCardWithPosition(
   try {
     titleText.fontName = { family: 'Inter', style: 'Bold' };
   } catch (e) {
-    console.warn('Could not set Bold font for title, using default');
+    logger.warn('Could not set Bold font for title, using default');
   }
   titleText.fills = [
     {
@@ -543,48 +528,28 @@ export async function createTemplateCardWithPosition(
   }
   
   const titleHeight = lineCount * lineHeight;
-  // Set the calculated height to ensure accurate spacing
   titleText.resize(maxTitleWidth, titleHeight);
   
-  // Set hyperlink AFTER all text operations are complete (resize, wrapping, etc.)
-  // This ensures the hyperlink is set on the final text content and persists
+  // Set hyperlink after all text operations complete
   const issueKey = customData && customData.issueKey;
-  console.log(`Hyperlink check - issueKey: "${issueKey}", jiraBaseUrl: "${jiraBaseUrl}"`);
+  logger.debug('Hyperlink check', { issueKey, jiraBaseUrl: jiraBaseUrl ? 'provided' : 'not provided' });
   if (issueKey && issueKey.trim() !== '' && jiraBaseUrl && jiraBaseUrl.trim() !== '') {
     try {
-      // Ensure the base URL has a protocol (https://) and doesn't have a trailing slash
       let baseUrl = jiraBaseUrl.trim().replace(/\/$/, '');
-      // Add https:// if no protocol is present
       if (!baseUrl.match(/^https?:\/\//i)) {
         baseUrl = `https://${baseUrl}`;
       }
       const url = `${baseUrl}/browse/${issueKey.trim()}`;
-      console.log(`Setting hyperlink for issue ${issueKey} with URL: ${url}`);
-      console.log(`Text length: ${titleText.characters.length}, titleContent: "${titleContent}"`);
-      
-      // Set hyperlink on the entire text, including the issue key
       const fullTextLength = titleText.characters.length;
-      console.log(`Setting hyperlink on range 0-${fullTextLength} for text: "${titleText.characters}"`);
       
       titleText.setRangeHyperlink(0, fullTextLength, {
         type: 'URL',
         value: url,
       });
       
-      // Verify the hyperlink was set
-      const hyperlinkRange = titleText.getRangeHyperlink(0, fullTextLength);
-      console.log(`Hyperlink verification - range 0-${fullTextLength}:`, hyperlinkRange);
-      console.log(`Hyperlink set successfully for ${issueKey}`);
     } catch (e) {
-      console.error('Could not set hyperlink on title:', e);
-      console.error('Error details:', e instanceof Error ? e.message : String(e));
+      logger.error('Could not set hyperlink on title', e instanceof Error ? e : new Error(String(e)), { issueKey });
       // Don't throw - continue with card creation even if hyperlink fails
-    }
-  } else {
-    if (issueKey && issueKey.trim() !== '') {
-      console.log(`Issue key ${issueKey} found but no valid Jira Base URL provided (jiraBaseUrl: "${jiraBaseUrl}")`);
-    } else if (jiraBaseUrl && jiraBaseUrl.trim() !== '') {
-      console.log(`Jira Base URL provided but no issue key found (issueKey: "${issueKey}")`);
     }
   }
 
@@ -652,7 +617,7 @@ export async function createTemplateCardWithPosition(
     }
   );
   
-  console.log(`Card creation - importVerbose: ${importVerbose}, fieldsToShow: ${fieldsToShow.length}, fieldsToDisplay: ${fieldsToDisplay.length}`);
+  // Card creation in progress
 
   let yOffset = CARD_CONFIG.PADDING + titleHeight + CARD_CONFIG.PADDING;
   for (const field of fieldsToDisplay) {
@@ -716,7 +681,7 @@ export async function createTemplateCardWithPosition(
     try {
       largeNumberText.fontName = { family: 'Inter', style: 'Bold' };
     } catch (e) {
-      console.warn('Could not set Bold font for number, using default');
+      logger.warn('Could not set Bold font for number, using default');
     }
     largeNumberText.fills = [
       {
@@ -751,7 +716,7 @@ export async function createTemplateCardWithPosition(
       try {
         assigneeText.fontName = { family: 'Inter', style: 'Bold' };
       } catch (e) {
-        console.warn('Could not set Bold font for assignee, using default');
+        logger.warn('Could not set Bold font for assignee, using default');
       }
       assigneeText.fills = [
         {
@@ -784,7 +749,7 @@ export async function createTemplateCardWithPosition(
       try {
         statusText.fontName = { family: 'Inter', style: 'Bold' };
       } catch (e) {
-        console.warn('Could not set Bold font for status, using default');
+        logger.warn('Could not set Bold font for status, using default');
       }
       statusText.fills = [
         {

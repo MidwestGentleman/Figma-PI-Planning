@@ -28,8 +28,8 @@ interface LogEntry {
 class Logger {
   private logLevel: LogLevel;
   private logs: LogEntry[] = [];
-  private readonly maxLogs = 100; // Prevent memory leaks
-  private readonly enableConsole = true; // Can be toggled for production
+  private readonly maxLogs = 100;
+  private readonly enableConsole = true;
 
   constructor(logLevel: LogLevel = LogLevel.INFO) {
     this.logLevel = logLevel;
@@ -44,7 +44,6 @@ class Logger {
     context?: Record<string, unknown>,
     error?: Error
   ): void {
-    // Skip if below threshold
     if (level < this.logLevel) return;
 
     const entry: LogEntry = {
@@ -55,15 +54,12 @@ class Logger {
       error,
     };
 
-    // Prevent memory leaks by limiting log history
     if (this.logs.length >= this.maxLogs) {
       this.logs.shift();
     }
     this.logs.push(entry);
 
-    // Output to console with appropriate method
     if (this.enableConsole) {
-      // console.debug may not exist in all environments, fallback to console.log
       const ConsoleType = console as unknown as { debug?: typeof console.log };
       const logMethod =
         level === LogLevel.ERROR
@@ -85,30 +81,18 @@ class Logger {
     }
   }
 
-  /**
-   * Log debug message (development only)
-   */
   debug(message: string, context?: Record<string, unknown>): void {
     this.log(LogLevel.DEBUG, message, context);
   }
 
-  /**
-   * Log info message
-   */
   info(message: string, context?: Record<string, unknown>): void {
     this.log(LogLevel.INFO, message, context);
   }
 
-  /**
-   * Log warning message
-   */
   warn(message: string, context?: Record<string, unknown>): void {
     this.log(LogLevel.WARN, message, context);
   }
 
-  /**
-   * Log error message
-   */
   error(
     message: string,
     error?: Error,
@@ -117,44 +101,26 @@ class Logger {
     this.log(LogLevel.ERROR, message, context, error);
   }
 
-  /**
-   * Get all log entries (for debugging)
-   */
   getLogs(): LogEntry[] {
     return [...this.logs];
   }
 
-  /**
-   * Clear all logs
-   */
   clearLogs(): void {
     this.logs = [];
   }
 
-  /**
-   * Set log level
-   */
   setLogLevel(level: LogLevel): void {
     this.logLevel = level;
   }
 
-  /**
-   * Get current log level
-   */
   getLogLevel(): LogLevel {
     return this.logLevel;
   }
 
-  /**
-   * Get logs filtered by level
-   */
   getLogsByLevel(level: LogLevel): LogEntry[] {
     return this.logs.filter((entry) => entry.level === level);
   }
 
-  /**
-   * Get recent error logs
-   */
   getRecentErrors(count: number = 10): LogEntry[] {
     return this.logs
       .filter((entry) => entry.level === LogLevel.ERROR)
@@ -162,10 +128,5 @@ class Logger {
   }
 }
 
-// Export singleton instance
-// In development, use DEBUG level; in production, use INFO
-export const logger = new Logger(
-  // Could be configured via environment or plugin settings
-  LogLevel.INFO
-);
+export const logger = new Logger(LogLevel.INFO);
 
