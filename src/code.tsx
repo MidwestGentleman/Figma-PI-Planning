@@ -34,6 +34,10 @@ import {
   getErrorMessage,
   yieldToUI,
   truncateAssignee,
+  detectTeamBoundaries,
+  detectSprintBoundaries,
+  assignTeamByPosition,
+  assignSprintByPosition,
 } from './utils';
 import {
   createTemplateCard,
@@ -1118,11 +1122,34 @@ async function processIssueBatch(
         frame.setPluginData('epicLink', issueEpicLink.trim());
       }
 
-      // Extract team from issue (Custom field (Studio) or Custom field (Team))
-      const issueTeam =
-        issue['Custom field (Studio)'] || issue['Custom field (Team)'] || '';
+      // Extract team/studio and team ID from issue
+      const issueStudio = issue['Custom field (Studio)'] || '';
+      const issueTeamID = issue['Custom field (Team)'] || '';
+
+      // Store studio (team name) - prioritize Studio field, fallback to Team field if not numeric
+      let issueTeam = issueStudio;
+      if (!issueTeam || issueTeam.trim() === '') {
+        const teamFieldValue = issueTeamID.trim();
+        // Only use Team field if it's not a numeric ID
+        if (teamFieldValue && !isNumericTeamID(teamFieldValue)) {
+          issueTeam = teamFieldValue;
+        }
+      }
+
       if (issueTeam && issueTeam.trim() !== '') {
         frame.setPluginData('team', issueTeam.trim());
+      }
+
+      // Store team ID separately if it's numeric
+      if (
+        issueTeamID &&
+        issueTeamID.trim() !== '' &&
+        isNumericTeamID(issueTeamID.trim())
+      ) {
+        frame.setPluginData('teamID', issueTeamID.trim());
+      } else if (issueStudio && issueStudio.trim() !== '') {
+        // If we have Studio but no Team ID, we'll build the mapping during import
+        // and infer it during export
       }
 
       // Store full description in plugin data for export (display is truncated)
@@ -1308,12 +1335,31 @@ async function processTeamSprintTickets(
               frame.setPluginData('epicLink', epicIssueKey.trim());
             }
 
-            const issueTeam =
-              epicCardToPlace['Custom field (Studio)'] ||
-              epicCardToPlace['Custom field (Team)'] ||
-              '';
+            // Extract team/studio and team ID from issue
+            const issueStudio = epicCardToPlace['Custom field (Studio)'] || '';
+            const issueTeamID = epicCardToPlace['Custom field (Team)'] || '';
+
+            // Store studio (team name) - prioritize Studio field, fallback to Team field if not numeric
+            let issueTeam = issueStudio;
+            if (!issueTeam || issueTeam.trim() === '') {
+              const teamFieldValue = issueTeamID.trim();
+              // Only use Team field if it's not a numeric ID
+              if (teamFieldValue && !isNumericTeamID(teamFieldValue)) {
+                issueTeam = teamFieldValue;
+              }
+            }
+
             if (issueTeam && issueTeam.trim() !== '') {
               frame.setPluginData('team', issueTeam.trim());
+            }
+
+            // Store team ID separately if it's numeric
+            if (
+              issueTeamID &&
+              issueTeamID.trim() !== '' &&
+              isNumericTeamID(issueTeamID.trim())
+            ) {
+              frame.setPluginData('teamID', issueTeamID.trim());
             }
 
             const originalDescription = epicCardToPlace['Description'] || '';
@@ -1471,12 +1517,31 @@ async function processTeamSprintTickets(
             frame.setPluginData('epicLink', issueEpicLink.trim());
           }
 
-          const issueTeam =
-            issue['Custom field (Studio)'] ||
-            issue['Custom field (Team)'] ||
-            '';
+          // Extract team/studio and team ID from issue
+          const issueStudio = issue['Custom field (Studio)'] || '';
+          const issueTeamID = issue['Custom field (Team)'] || '';
+
+          // Store studio (team name) - prioritize Studio field, fallback to Team field if not numeric
+          let issueTeam = issueStudio;
+          if (!issueTeam || issueTeam.trim() === '') {
+            const teamFieldValue = issueTeamID.trim();
+            // Only use Team field if it's not a numeric ID
+            if (teamFieldValue && !isNumericTeamID(teamFieldValue)) {
+              issueTeam = teamFieldValue;
+            }
+          }
+
           if (issueTeam && issueTeam.trim() !== '') {
             frame.setPluginData('team', issueTeam.trim());
+          }
+
+          // Store team ID separately if it's numeric
+          if (
+            issueTeamID &&
+            issueTeamID.trim() !== '' &&
+            isNumericTeamID(issueTeamID.trim())
+          ) {
+            frame.setPluginData('teamID', issueTeamID.trim());
           }
 
           if (
@@ -1706,6 +1771,41 @@ async function importCardsFromCSV(
     logger.warn('No issues parsed from CSV');
     figma.notify('❌ No data found in CSV file');
     return;
+  }
+
+  // Build Studio -> Team ID mapping from imported issues
+  // This mapping will be used during export to infer Team ID from Studio
+  const studioToTeamIDMapping: { [studio: string]: string } = {};
+  for (const issue of issues) {
+    const studioField = issue['Custom field (Studio)'];
+    const teamIDField = issue['Custom field (Team)'];
+    const studio = (studioField && studioField.trim()) || '';
+    const teamID = (teamIDField && teamIDField.trim()) || '';
+
+    // If we have both Studio and Team ID, and Team ID is numeric, store the mapping
+    if (studio && teamID && isNumericTeamID(teamID)) {
+      studioToTeamIDMapping[studio] = teamID;
+      logger.debug('Found Studio -> Team ID mapping', {
+        studio,
+        teamID,
+      });
+    }
+  }
+
+  // Store the mapping in page-level plugin data for use during export
+  if (Object.keys(studioToTeamIDMapping).length > 0) {
+    try {
+      const mappingJson = JSON.stringify(studioToTeamIDMapping);
+      figma.currentPage.setPluginData('studioToTeamIDMapping', mappingJson);
+      logger.info('Stored Studio -> Team ID mapping', {
+        mappingCount: Object.keys(studioToTeamIDMapping).length,
+        mappings: studioToTeamIDMapping,
+      });
+    } catch (error) {
+      logger.warn('Failed to store Studio -> Team ID mapping', {
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
   }
 
   // Suppress duplicate notifications during import
@@ -2787,10 +2887,11 @@ function extractCardData(frame: FrameNode): CardData | null {
     }
   }
 
-  // Extract sprint, epic link, team, and full description from plugin data (stored during import)
+  // Extract sprint, epic link, team, teamID, and full description from plugin data (stored during import)
   const sprint = frame.getPluginData('sprint') || undefined;
   const epicLink = frame.getPluginData('epicLink') || undefined;
   const team = frame.getPluginData('team') || undefined;
+  const teamID = frame.getPluginData('teamID') || undefined;
   const fullDescription = frame.getPluginData('fullDescription') || undefined;
 
   // Extract stored Description and Acceptance Criteria from plugin data
@@ -2858,7 +2959,7 @@ function extractCardData(frame: FrameNode): CardData | null {
     }
   }
 
-  // Return extracted card data with issue key, sprint, epic link, and team for export
+  // Return extracted card data with issue key, sprint, epic link, team, and teamID for export
   // These are preserved for imported cards to enable round-trip to Jira
   return {
     type: cardType,
@@ -2868,7 +2969,72 @@ function extractCardData(frame: FrameNode): CardData | null {
     sprint: sprint || undefined, // Include sprint if available
     epicLink: epicLink || undefined, // Include epic link if available
     team: team || undefined, // Include team/studio if available
+    teamID: teamID || undefined, // Include team ID if available
   };
+}
+
+/**
+ * Loads the Studio -> Team ID mapping from page-level plugin data.
+ * This mapping is built during import from the Jira CSV data.
+ *
+ * @returns The mapping object, or empty object if no mapping exists
+ */
+function loadStudioToTeamIDMapping(): { [studio: string]: string } {
+  try {
+    const mappingJson = figma.currentPage.getPluginData(
+      'studioToTeamIDMapping'
+    );
+    if (mappingJson && mappingJson.trim() !== '') {
+      const mapping = JSON.parse(mappingJson) as { [studio: string]: string };
+      logger.debug('Loaded Studio -> Team ID mapping', {
+        mappingCount: Object.keys(mapping).length,
+      });
+      return mapping;
+    }
+  } catch (error) {
+    logger.warn('Failed to load Studio -> Team ID mapping', {
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
+  return {};
+}
+
+/**
+ * Infers Team ID from Studio name using the mapping built during import.
+ *
+ * @param studio - Studio name (e.g., "Triton", "Gadget Hackwrench")
+ * @returns The inferred Team ID, or undefined if no mapping exists
+ */
+function inferTeamIDFromStudio(studio?: string): string | undefined {
+  if (!studio || studio.trim() === '') {
+    return undefined;
+  }
+
+  const mapping = loadStudioToTeamIDMapping();
+  const teamID = mapping[studio.trim()];
+
+  return teamID;
+}
+
+/**
+ * Infers Studio name from Team ID using the reverse mapping.
+ *
+ * @param teamID - Team ID (e.g., "1039", "1040")
+ * @returns The inferred Studio name, or undefined if no mapping exists
+ */
+function inferStudioFromTeamID(teamID?: string): string | undefined {
+  if (!teamID || teamID.trim() === '') {
+    return undefined;
+  }
+
+  const mapping = loadStudioToTeamIDMapping();
+  for (const [studio, mappedTeamID] of Object.entries(mapping)) {
+    if (mappedTeamID === teamID.trim()) {
+      return studio;
+    }
+  }
+
+  return undefined;
 }
 
 /**
@@ -2886,7 +3052,8 @@ function mapFieldToCSVColumn(fieldLabel: string, templateType: string): string {
     'Business Value': 'Custom field (Business Value)',
     'Target Date': 'Due Date',
     Dependencies: 'Outward issue link (Blocks)',
-    Team: 'Custom field (Studio)',
+    // Note: Team/Studio are handled as metadata (card.team, card.teamID), not as fields
+    // So we don't map "Team" field to CSV column here
     'Priority Rank': 'Custom field (Priority Rank)',
     'Test Type': 'Custom field (Test Type)',
   };
@@ -3011,11 +3178,19 @@ function cleanCardData(cardData: {
   title: string;
   fields: { label: string; value: string }[];
   issueKey?: string;
+  sprint?: string;
+  epicLink?: string;
+  team?: string;
+  teamID?: string;
 }): {
   type: string;
   title: string;
   fields: { label: string; value: string }[];
   issueKey?: string;
+  sprint?: string;
+  epicLink?: string;
+  team?: string;
+  teamID?: string;
 } {
   const cleanedFields = cardData.fields.map((field) => {
     const defaultValue = getDefaultValueForField(cardData.type, field.label);
@@ -3039,6 +3214,10 @@ function cleanCardData(cardData: {
     title: cardData.title,
     fields: cleanedFields,
     issueKey: cardData.issueKey,
+    sprint: cardData.sprint,
+    epicLink: cardData.epicLink,
+    team: cardData.team,
+    teamID: cardData.teamID,
   };
 }
 
@@ -3155,6 +3334,20 @@ function exportCardsToCSV(filterNew: boolean = false): void {
     }
   }
 
+  // Detect team and sprint boundaries once for all cards (performance optimization)
+  const teamBoundaries = detectTeamBoundaries();
+  const sprintBoundaries = detectSprintBoundaries();
+
+  logger.info('Position-based assignment boundaries detected', {
+    teamBoundariesCount: teamBoundaries.length,
+    sprintBoundariesCount: sprintBoundaries.length,
+    teamBoundaries: teamBoundaries.map((b) => ({
+      name: b.teamName,
+      top: b.topY,
+      bottom: b.bottomY,
+    })),
+  });
+
   // Extract data from each card
   for (const frame of frames) {
     // Skip epic label cards (they're just visual labels, not for export)
@@ -3173,20 +3366,63 @@ function exportCardsToCSV(filterNew: boolean = false): void {
       continue;
     }
     if (cardData) {
-      // Skip milestones - they won't be exported to Jira
       if (cardData.type === 'Milestone') {
         continue;
       }
 
-      // If filtering for new cards only, skip cards with issue keys
       if (filterNew && cardData.issueKey && cardData.issueKey.trim() !== '') {
         continue;
       }
 
-      // Get title from extracted card data (which comes from the actual text node)
-      const title = cardData.title;
+      const excludeFromAutoAssignment =
+        cardData.type === 'Theme' ||
+        cardData.type === 'Initiative' ||
+        cardData.type === 'Milestone';
 
-      // Concatenate user story fields into Description
+      if (!excludeFromAutoAssignment) {
+        if (!cardData.team || cardData.team.trim() === '') {
+          const assignedTeam = assignTeamByPosition(frame, teamBoundaries);
+          if (assignedTeam && assignedTeam !== 'Unknown') {
+            cardData.team = assignedTeam;
+          }
+        }
+
+        if (
+          !cardData.sprint ||
+          cardData.sprint.trim() === '' ||
+          cardData.sprint === 'Backlog'
+        ) {
+          const assignedSprint = assignSprintByPosition(
+            frame,
+            sprintBoundaries
+          );
+          if (assignedSprint && assignedSprint !== 'Backlog') {
+            cardData.sprint = assignedSprint;
+          }
+        }
+      }
+
+      if (
+        cardData.team &&
+        cardData.team.trim() !== '' &&
+        (!cardData.teamID || cardData.teamID.trim() === '')
+      ) {
+        const inferredTeamID = inferTeamIDFromStudio(cardData.team);
+        if (inferredTeamID) {
+          cardData.teamID = inferredTeamID;
+        }
+      } else if (
+        cardData.teamID &&
+        cardData.teamID.trim() !== '' &&
+        (!cardData.team || cardData.team.trim() === '')
+      ) {
+        const inferredStudio = inferStudioFromTeamID(cardData.teamID);
+        if (inferredStudio) {
+          cardData.team = inferredStudio;
+        }
+      }
+
+      const title = cardData.title;
       if (cardData.type === 'User Story') {
         const asA = cardData.fields.find((f) => f.label === 'As a');
         const iWant = cardData.fields.find((f) => f.label === 'I want');
@@ -3207,7 +3443,6 @@ function exportCardsToCSV(filterNew: boolean = false): void {
         }
       }
 
-      // Concatenate test fields into Description
       if (cardData.type === 'Test') {
         const given = cardData.fields.find((f) => f.label === 'Given');
         const when = cardData.fields.find((f) => f.label === 'When');
@@ -3228,17 +3463,22 @@ function exportCardsToCSV(filterNew: boolean = false): void {
         }
       }
 
-      // Get issue key directly from frame metadata (more reliable than extracted data)
-      // This ensures we get the issue key even if extraction missed it
       const frameIssueKey = frame.getPluginData('issueKey') || '';
       const finalIssueKey = cardData.issueKey || frameIssueKey;
 
-      // Clean the card data by removing default values before exporting
+      const finalSprint = cardData.sprint;
+      const finalEpicLink = cardData.epicLink;
+      const finalTeam = cardData.team;
+      const finalTeamID = cardData.teamID;
       const cleanedCardData = cleanCardData({
         type: cardData.type,
         title: title,
         fields: cardData.fields,
         issueKey: finalIssueKey || undefined,
+        sprint: finalSprint,
+        epicLink: finalEpicLink,
+        team: finalTeam,
+        teamID: finalTeamID,
       });
 
       cards.push(cleanedCardData);
@@ -3290,6 +3530,9 @@ function exportCardsToCSV(filterNew: boolean = false): void {
     if (card.team && card.team.trim() !== '') {
       allCSVColumns.add('Custom field (Studio)');
     }
+    if (card.teamID && card.teamID.trim() !== '') {
+      allCSVColumns.add('Custom field (Team)');
+    }
   });
 
   // Check if any epic tickets are included - if so, add Epic Name column
@@ -3316,6 +3559,9 @@ function exportCardsToCSV(filterNew: boolean = false): void {
   if (allCSVColumns.has('Custom field (Studio)')) {
     orderedCSVColumns.push('Custom field (Studio)');
   }
+  if (allCSVColumns.has('Custom field (Team)')) {
+    orderedCSVColumns.push('Custom field (Team)');
+  }
 
   const priorityOrder = [
     'Description',
@@ -3327,13 +3573,13 @@ function exportCardsToCSV(filterNew: boolean = false): void {
     'Custom field (Business Value)',
     'Due Date',
     'Outward issue link (Blocks)',
-    'Custom field (Studio)',
+    // Note: Custom field (Studio) and Custom field (Team) are already added above in orderedCSVColumns
     'Custom field (Priority Rank)',
     'Custom field (Test Type)',
   ];
 
   priorityOrder.forEach((col) => {
-    if (allCSVColumns.has(col)) {
+    if (allCSVColumns.has(col) && !orderedCSVColumns.includes(col)) {
       orderedCSVColumns.push(col);
     }
   });
@@ -3368,14 +3614,10 @@ function exportCardsToCSV(filterNew: boolean = false): void {
 
   const finalCSVColumns = orderedCSVColumns.concat(remainingColumns);
 
-  // Always add label column at the end
   finalCSVColumns.push('label');
 
-  // Generate CSV header
-  const header = finalCSVColumns.join(',');
-  const rows = [header];
+  const dataRows: string[][] = [];
 
-  // Generate CSV rows
   cards.forEach((card) => {
     const row: string[] = [];
 
@@ -3383,7 +3625,6 @@ function exportCardsToCSV(filterNew: boolean = false): void {
       let value = '';
 
       if (csvColumn === 'Summary') {
-        // Clean newline characters from title (Jira doesn't accept newlines in Summary)
         value = card.title.replace(/\n/g, ' ').replace(/\r/g, '');
       } else if (csvColumn === 'Issue key') {
         value = card.issueKey || '';
@@ -3395,19 +3636,17 @@ function exportCardsToCSV(filterNew: boolean = false): void {
         value = card.epicLink || '';
       } else if (csvColumn === 'Custom field (Studio)') {
         value = card.team || '';
+      } else if (csvColumn === 'Custom field (Team)') {
+        value = card.teamID || '';
       } else if (csvColumn === 'Epic Name') {
-        // Epic Name should be the same as Summary for epic tickets
         if (card.type === 'Epic') {
           value = card.title.replace(/\n/g, ' ').replace(/\r/g, '');
         }
       } else if (csvColumn === 'label') {
-        // Always set label to "NeedsReview"
         value = 'NeedsReview';
       } else {
-        // Find the internal field label(s) for this CSV column
         const internalLabels = csvColumnMap.get(csvColumn);
         if (internalLabels && internalLabels.length > 0) {
-          // If multiple fields map to same column, use the first one found
           const preferredLabel = internalLabels.includes('Summary')
             ? 'Summary'
             : internalLabels[0];
@@ -3416,17 +3655,52 @@ function exportCardsToCSV(filterNew: boolean = false): void {
         }
       }
 
-      // Escape quotes and wrap in quotes for CSV
       const escapedValue = value.replace(/"/g, '""');
       row.push(`"${escapedValue}"`);
     });
 
-    rows.push(row.join(','));
+    dataRows.push(row);
   });
+
+  const columnsToKeep: number[] = [];
+
+  for (let colIndex = 0; colIndex < finalCSVColumns.length; colIndex++) {
+    const columnName = finalCSVColumns[colIndex];
+
+    if (
+      columnName === 'Summary' ||
+      columnName === 'Issue Type' ||
+      columnName === 'label'
+    ) {
+      columnsToKeep.push(colIndex);
+      continue;
+    }
+
+    let allEmpty = true;
+    for (const row of dataRows) {
+      const value = row[colIndex].replace(/^"|"$/g, '').replace(/""/g, '"');
+      if (value && value.trim() !== '') {
+        allEmpty = false;
+        break;
+      }
+    }
+
+    if (!allEmpty) {
+      columnsToKeep.push(colIndex);
+    }
+  }
+  const filteredCSVColumns = columnsToKeep.map(
+    (index) => finalCSVColumns[index]
+  );
+  const filteredRows = dataRows.map((row) =>
+    columnsToKeep.map((index) => row[index])
+  );
+
+  const header = filteredCSVColumns.join(',');
+  const rows = [header, ...filteredRows.map((row) => row.join(','))];
 
   const csvContent = rows.join('\n');
 
-  // Send CSV to UI for download
   const exportType = filterNew ? 'new' : 'all';
   figma.ui.postMessage({
     type: 'export-csv',
