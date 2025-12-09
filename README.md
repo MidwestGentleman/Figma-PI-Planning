@@ -281,6 +281,14 @@ Modify `src/code.tsx`:
 - **Security**: Input validation, XSS prevention, URL sanitization
 - **Performance**: Batch processing, font caching, retry logic for reliability
 - **Maintainability**: Well-organized modules with single responsibility
+- **Figma Runtime Compatibility**: Figma's plugin runtime does not support optional chaining (`?.`). Use traditional null checks instead:
+  ```typescript
+  // ❌ Not supported
+  const value = obj?.property?.trim() || '';
+  
+  // ✅ Use this instead
+  const value = (obj && obj.property && obj.property.trim()) || '';
+  ```
 
 ## Troubleshooting
 

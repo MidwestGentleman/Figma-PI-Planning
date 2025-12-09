@@ -53,7 +53,8 @@ export interface CardData {
   issueKey?: string;
   sprint?: string;
   epicLink?: string;
-  team?: string;
+  team?: string; // Studio name
+  teamID?: string; // Team ID (numeric or identifier)
 }
 
 /**
