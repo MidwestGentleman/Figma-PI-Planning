@@ -7,7 +7,7 @@ import { TEMPLATES } from './templates';
  */
 export type PluginMessage =
   | { type: 'insert-template'; templateType: keyof typeof TEMPLATES }
-  | { type: 'import-csv'; csvText: string; jiraBaseUrl?: string; importVerbose?: boolean; maxCardsPerColumn?: number; numFutureSprints?: number; futureSprintsColumns?: number }
+  | { type: 'import-csv'; csvText: string; jiraBaseUrl?: string; importVerbose?: boolean; showRollingTickets?: boolean; maxCardsPerColumn?: number; numFutureSprints?: number; futureSprintsColumns?: number }
   | { type: 'export-csv'; filterNew?: boolean }
   | { type: 'get-settings' }
   | { type: 'get-jira-url' }
@@ -16,11 +16,13 @@ export type PluginMessage =
   | { type: 'set-max-cards-per-column'; maxCardsPerColumn: number }
   | { type: 'set-num-future-sprints'; numFutureSprints: number }
   | { type: 'set-future-sprints-columns'; futureSprintsColumns: number }
+  | { type: 'set-show-rolling-tickets'; showRollingTickets: boolean }
   | { type: 'close' };
 
 export type UIMessage =
-  | { type: 'settings-loaded'; jiraBaseUrl?: string; importVerbose?: boolean; maxCardsPerColumn?: number; numFutureSprints?: number; futureSprintsColumns?: number }
-  | { type: 'jira-url-loaded'; jiraBaseUrl?: string };
+  | { type: 'settings-loaded'; jiraBaseUrl?: string; importVerbose?: boolean; showRollingTickets?: boolean; maxCardsPerColumn?: number; numFutureSprints?: number; futureSprintsColumns?: number }
+  | { type: 'jira-url-loaded'; jiraBaseUrl?: string }
+  | { type: 'import-complete'; success: boolean; message?: string };
 
 /**
  * Template type definition
