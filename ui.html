@@ -406,6 +406,10 @@
                 <input type="checkbox" id="import-verbose">
                 <label for="import-verbose">Import Verbose</label>
             </div>
+            <div class="checkbox-container">
+                <input type="checkbox" id="show-rolling-tickets">
+                <label for="show-rolling-tickets">Show Rolling Tickets</label>
+            </div>
             <div class="settings-input-group">
                 <label for="max-cards-per-column">Max Cards Per Column</label>
                 <input type="number" id="max-cards-per-column" min="1" max="20" value="5">
@@ -457,6 +461,7 @@
         // Load saved settings from plugin storage
         const jiraUrlInput = document.getElementById('jira-url');
         const importVerboseCheckbox = document.getElementById('import-verbose');
+        const showRollingTicketsCheckbox = document.getElementById('show-rolling-tickets');
         const maxCardsPerColumnInput = document.getElementById('max-cards-per-column');
         const numFutureSprintsInput = document.getElementById('num-future-sprints');
         const futureSprintsColumnsInput = document.getElementById('future-sprints-columns');
@@ -485,6 +490,16 @@
                 pluginMessage: {
                     type: 'set-import-verbose',
                     importVerbose: event.target.checked
+                }
+            }, '*');
+        });
+
+        // Save Show Rolling Tickets when it changes
+        showRollingTicketsCheckbox.addEventListener('change', (event) => {
+            parent.postMessage({
+                pluginMessage: {
+                    type: 'set-show-rolling-tickets',
+                    showRollingTickets: event.target.checked
                 }
             }, '*');
         });
@@ -529,7 +544,8 @@
         });
 
         // Handle CSV file upload
-        document.getElementById('csv-upload').addEventListener('change', (event) => {
+        const csvUploadInput = document.getElementById('csv-upload');
+        csvUploadInput.addEventListener('change', (event) => {
             const file = event.target.files[0];
             if (!file) {
                 console.error('No file selected');
@@ -542,12 +558,14 @@
                 const csvText = e.target.result;
                 const jiraBaseUrl = jiraUrlInput.value.trim() || undefined;
                 const importVerbose = importVerboseCheckbox.checked;
+                const showRollingTickets = showRollingTicketsCheckbox.checked;
                 const maxCardsPerColumn = parseInt(maxCardsPerColumnInput.value, 10) || 5;
                 const numFutureSprints = parseInt(numFutureSprintsInput.value, 10) || 6;
                 const futureSprintsColumns = parseInt(futureSprintsColumnsInput.value, 10) || 6;
                 console.log('File read successfully, length:', csvText.length);
                 console.log('Jira Base URL being sent:', jiraBaseUrl);
                 console.log('Import Verbose:', importVerbose);
+                console.log('Show Rolling Tickets:', showRollingTickets);
                 console.log('Max Cards Per Column:', maxCardsPerColumn);
                 console.log('Number of Future Sprints:', numFutureSprints);
                 console.log('Future Sprints Columns:', futureSprintsColumns);
@@ -557,15 +575,22 @@
                         csvText: csvText,
                         jiraBaseUrl: jiraBaseUrl,
                         importVerbose: importVerbose,
+                        showRollingTickets: showRollingTickets,
                         maxCardsPerColumn: maxCardsPerColumn,
                         numFutureSprints: numFutureSprints,
                         futureSprintsColumns: futureSprintsColumns
                     }
                 }, '*');
+                
+                // Reset the file input so the change event will fire again on next selection
+                // This allows users to import multiple times without closing/reopening the plugin
+                event.target.value = '';
             };
             reader.onerror = (error) => {
                 console.error('Error reading file:', error);
                 alert('Error reading file. Please try again.');
+                // Reset the file input even on error
+                event.target.value = '';
             };
             reader.readAsText(file);
         });
@@ -614,6 +639,9 @@
                 if (msg.importVerbose !== undefined) {
                     importVerboseCheckbox.checked = msg.importVerbose;
                 }
+                if (msg.showRollingTickets !== undefined) {
+                    showRollingTicketsCheckbox.checked = msg.showRollingTickets;
+                }
                 if (msg.maxCardsPerColumn !== undefined) {
                     maxCardsPerColumnInput.value = msg.maxCardsPerColumn.toString();
                 }
@@ -623,6 +651,10 @@
                 if (msg.futureSprintsColumns !== undefined) {
                     futureSprintsColumnsInput.value = msg.futureSprintsColumns.toString();
                 }
+            } else if (msg.type === 'import-complete') {
+                // Reset the file input when import completes (as a backup)
+                // This ensures the input is ready for the next import
+                csvUploadInput.value = '';
             }
         };
     </script>

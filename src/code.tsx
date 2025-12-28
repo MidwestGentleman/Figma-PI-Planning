@@ -86,8 +86,9 @@ function parseCSVLine(line: string): string[] {
 
 /**
  * Parses CSV text into an array of objects, handling multiline fields in quotes.
+ * For "Sprint" columns, preserves all values as arrays to handle tickets that rolled across multiple sprints.
  */
-function parseCSV(csvText: string): Array<{ [key: string]: string }> {
+function parseCSV(csvText: string): Array<{ [key: string]: string | string[] }> {
   if (!csvText || csvText.trim() === '') return [];
 
   let headerEnd = 0;
@@ -113,7 +114,7 @@ function parseCSV(csvText: string): Array<{ [key: string]: string }> {
 
   if (headers.length === 0) return [];
 
-  const rows: Array<{ [key: string]: string }> = [];
+  const rows: Array<{ [key: string]: string | string[] }> = [];
   let currentLine = '';
   inQuotes = false;
   let lineStart = headerEnd + 1;
@@ -134,22 +135,51 @@ function parseCSV(csvText: string): Array<{ [key: string]: string }> {
       if (currentLine.trim() !== '') {
         const values = parseCSVLine(currentLine);
         if (values.length > 0 && values[0].trim() !== '') {
-          const row: { [key: string]: string } = {};
+          const row: { [key: string]: string | string[] } = {};
           headers.forEach((header, index) => {
             const value = values[index] || '';
-            // Coalesce duplicate column names: use first non-empty value
-            if (header in row) {
-              if (!row[header] || row[header].trim() === '') {
-                if (value && value.trim() !== '') {
-                  row[header] = value;
-                }
+            // For "Sprint" columns, collect ALL values (not just first non-empty)
+            // This allows us to handle tickets that rolled across multiple sprints
+            if (header.toLowerCase() === 'sprint') {
+              // Check if we already have this header (from a previous duplicate column)
+              if (!(header in row)) {
+                row[header] = [];
+              }
+              // Ensure it's an array (might have been set as string in previous iteration)
+              if (!Array.isArray(row[header])) {
+                const existingValue = row[header] as string;
+                row[header] = existingValue && existingValue.trim() !== '' ? [existingValue] : [];
+              }
+              const sprintArray = row[header] as string[];
+              if (value && value.trim() !== '' && value.trim() !== '[]' && !value.trim().startsWith('Checklist(')) {
+                sprintArray.push(value.trim());
               }
             } else {
-              row[header] = value;
+              // Coalesce duplicate column names: use first non-empty value
+              if (header in row) {
+                const existing = row[header];
+                if (Array.isArray(existing)) {
+                  // Shouldn't happen for non-Sprint columns, but handle it
+                  if (existing.length === 0 && value && value.trim() !== '') {
+                    row[header] = value;
+                  }
+                } else if (!existing || existing.trim() === '') {
+                  if (value && value.trim() !== '') {
+                    row[header] = value;
+                  }
+                }
+              } else {
+                row[header] = value;
+              }
             }
           });
           const hasData = Object.values(row).some(
-            (val) => val && val.trim() !== ''
+            (val) => {
+              if (Array.isArray(val)) {
+                return val.length > 0 && val.some(v => v && v.trim() !== '');
+              }
+              return val && typeof val === 'string' && val.trim() !== '';
+            }
           );
           if (hasData) {
             rows.push(row);
@@ -165,23 +195,52 @@ function parseCSV(csvText: string): Array<{ [key: string]: string }> {
   if (currentLine.trim() !== '') {
     const values = parseCSVLine(currentLine);
     if (values.length > 0 && values[0].trim() !== '') {
-      const row: { [key: string]: string } = {};
+      const row: { [key: string]: string | string[] } = {};
       headers.forEach((header, index) => {
         const value = values[index] || '';
-        // Coalesce duplicate column names: use first non-empty value
-        if (header in row) {
-          if (!row[header] || row[header].trim() === '') {
-            if (value && value.trim() !== '') {
-              row[header] = value;
-            }
+        // For "Sprint" columns, collect ALL values (not just first non-empty)
+        // This allows us to handle tickets that rolled across multiple sprints
+        if (header.toLowerCase() === 'sprint') {
+          // Check if we already have this header (from a previous duplicate column)
+          if (!(header in row)) {
+            row[header] = [];
+          }
+          // Ensure it's an array (might have been set as string in previous iteration)
+          if (!Array.isArray(row[header])) {
+            const existingValue = row[header] as string;
+            row[header] = existingValue && existingValue.trim() !== '' ? [existingValue] : [];
+          }
+          const sprintArray = row[header] as string[];
+          if (value && value.trim() !== '' && value.trim() !== '[]' && !value.trim().startsWith('Checklist(')) {
+            sprintArray.push(value.trim());
           }
         } else {
-          row[header] = value;
+          // Coalesce duplicate column names: use first non-empty value
+          if (header in row) {
+            const existing = row[header];
+            if (Array.isArray(existing)) {
+              // Shouldn't happen for non-Sprint columns, but handle it
+              if (existing.length === 0 && value && value.trim() !== '') {
+                row[header] = value;
+              }
+            } else if (!existing || existing.trim() === '') {
+              if (value && value.trim() !== '') {
+                row[header] = value;
+              }
+            }
+          } else {
+            row[header] = value;
+          }
         }
       });
 
       const hasData = Object.values(row).some(
-        (val) => val && val.trim() !== ''
+        (val) => {
+          if (Array.isArray(val)) {
+            return val.length > 0 && val.some(v => v && v.trim() !== '');
+          }
+          return val && typeof val === 'string' && val.trim() !== '';
+        }
       );
       if (hasData) {
         rows.push(row);
@@ -241,32 +300,44 @@ function truncateDescription(
  * Maps a Jira issue to a template type and extracts relevant data.
  * @returns Template type and data, or null if issue cannot be mapped
  */
-function mapJiraIssueToTemplate(issue: { [key: string]: string }): {
+/**
+ * Helper function to safely extract string value from issue field
+ * (handles both string and string[] types, returns first value if array)
+ */
+function getIssueField(issue: { [key: string]: string | string[] }, field: string): string {
+  const value = issue[field];
+  if (Array.isArray(value)) {
+    return value[0] || '';
+  }
+  return value || '';
+}
+
+function mapJiraIssueToTemplate(issue: { [key: string]: string | string[] }): {
   templateType: keyof typeof TEMPLATES;
   data: { [key: string]: string };
 } | null {
-  const rawIssueType = issue['Issue Type'] || '';
+  const rawIssueType = getIssueField(issue, 'Issue Type');
   const issueType = rawIssueType.trim().toLowerCase();
-  const summary = issue['Summary'] || '';
-  const description = formatJiraText(issue['Description'] || '');
-  const priority = issue['Priority'] || '';
-  const status = issue['Status'] || 'Open';
-  const storyPointsRaw = issue['Custom field (Story Points)'] || '';
+  const summary = getIssueField(issue, 'Summary');
+  const description = formatJiraText(getIssueField(issue, 'Description'));
+  const priority = getIssueField(issue, 'Priority');
+  const status = getIssueField(issue, 'Status') || 'Open';
+  const storyPointsRaw = getIssueField(issue, 'Custom field (Story Points)');
   const storyPoints =
     storyPointsRaw && storyPointsRaw !== '?' && storyPointsRaw !== '#'
       ? Math.round(parseFloat(storyPointsRaw) || 0).toString()
       : storyPointsRaw || '?';
   const acceptanceCriteria = formatJiraText(
-    issue['Custom field (Acceptance Criteria)'] || ''
+    getIssueField(issue, 'Custom field (Acceptance Criteria)')
   );
-  const userStory = formatJiraText(issue['Custom field (User Story)'] || '');
-  const issueKey = issue['Issue key'] || '';
+  const userStory = formatJiraText(getIssueField(issue, 'Custom field (User Story)'));
+  const issueKey = getIssueField(issue, 'Issue key');
   const team =
-    issue['Custom field (Studio)'] || issue['Custom field (Team)'] || '';
-  const dueDate = issue['Due Date'] || '';
-  const fixVersions = issue['Fix Version/s'] || '';
-  const businessValue = issue['Custom field (Business Value)'] || '';
-  const dependencies = issue['Outward issue link (Blocks)'] || '';
+    getIssueField(issue, 'Custom field (Studio)') || getIssueField(issue, 'Custom field (Team)') || '';
+  const dueDate = getIssueField(issue, 'Due Date');
+  const fixVersions = getIssueField(issue, 'Fix Version/s');
+  const businessValue = getIssueField(issue, 'Custom field (Business Value)');
+  const dependencies = getIssueField(issue, 'Outward issue link (Blocks)');
 
   let asA = '';
   let iWant = '';
@@ -297,7 +368,7 @@ function mapJiraIssueToTemplate(issue: { [key: string]: string }): {
         title: summary, // Title → Summary
         Description: displayDescription, // Truncated description for display
         'Priority Rank':
-          issue['Priority'] || issue['Custom field (Priority Rank)'] || '#',
+          getIssueField(issue, 'Priority') || getIssueField(issue, 'Custom field (Priority Rank)') || '#',
         'Acceptance Criteria':
           acceptanceCriteria || '- Criterion 1\n- Criterion 2',
         Status: status, // Status field for display at bottom
@@ -320,7 +391,7 @@ function mapJiraIssueToTemplate(issue: { [key: string]: string }): {
           acceptanceCriteria || '- Criterion 1\n- Criterion 2',
         'Story Points': storyPoints || '?',
         Priority: priority || 'Medium',
-        Assignee: issue['Assignee'] || 'Unassigned',
+        Assignee: getIssueField(issue, 'Assignee') || 'Unassigned',
         issueKey: issueKey, // Store issue key for hyperlink
       },
     };
@@ -332,7 +403,7 @@ function mapJiraIssueToTemplate(issue: { [key: string]: string }): {
         title: summary, // Title → Summary
         Description: description || 'Bug description...', // Description → Description
         'Story Points': storyPoints || '?', // Include Story Points if available
-        Assignee: issue['Assignee'] || 'Unassigned',
+        Assignee: getIssueField(issue, 'Assignee') || 'Unassigned',
         'Acceptance Criteria':
           acceptanceCriteria || '- Criterion 1\n- Criterion 2',
         issueKey: issueKey, // Store issue key for hyperlink
@@ -347,10 +418,40 @@ function mapJiraIssueToTemplate(issue: { [key: string]: string }): {
         title: summary, // Title → Summary
         Description: description || 'Task description...', // Description → Description
         'Story Points': storyPoints || '?', // Include Story Points if available
-        Assignee: issue['Assignee'] || 'Unassigned',
+        Assignee: getIssueField(issue, 'Assignee') || 'Unassigned',
         'Acceptance Criteria':
           acceptanceCriteria || '- Criterion 1\n- Criterion 2',
         issueKey: issueKey, // Store issue key for hyperlink
+      },
+    };
+  } else if (issueType === 'security') {
+    templateType = 'task';
+    return {
+      templateType,
+      data: {
+        title: summary, // Title → Summary
+        Description: description || 'Security task description...', // Description → Description
+        'Story Points': storyPoints || '?', // Include Story Points if available
+        Assignee: getIssueField(issue, 'Assignee') || 'Unassigned',
+        'Acceptance Criteria':
+          acceptanceCriteria || '- Criterion 1\n- Criterion 2',
+        issueKey: issueKey, // Store issue key for hyperlink
+        originalIssueType: 'security', // Store original type for icon styling
+      },
+    };
+  } else if (issueType === 'internal') {
+    templateType = 'task';
+    return {
+      templateType,
+      data: {
+        title: summary, // Title → Summary
+        Description: description || 'Internal task description...', // Description → Description
+        'Story Points': storyPoints || '?', // Include Story Points if available
+        Assignee: getIssueField(issue, 'Assignee') || 'Unassigned',
+        'Acceptance Criteria':
+          acceptanceCriteria || '- Criterion 1\n- Criterion 2',
+        issueKey: issueKey, // Store issue key for hyperlink
+        originalIssueType: 'internal', // Store original type for icon styling
       },
     };
   } else if (issueType === 'spike') {
@@ -361,7 +462,7 @@ function mapJiraIssueToTemplate(issue: { [key: string]: string }): {
         title: summary, // Title → Summary
         Description: description || 'Spike description...', // Description → Description
         'Story Points': storyPoints || '?', // Include Story Points if available
-        Assignee: issue['Assignee'] || 'Unassigned',
+        Assignee: getIssueField(issue, 'Assignee') || 'Unassigned',
         'Acceptance Criteria':
           acceptanceCriteria || '- Criterion 1\n- Criterion 2',
         issueKey: issueKey, // Store issue key for hyperlink
@@ -374,12 +475,28 @@ function mapJiraIssueToTemplate(issue: { [key: string]: string }): {
       data: {
         title: summary, // Title → Summary
         Description: description || 'Test description...', // Description → Description
-        'Test Type': issue['Custom field (Test Type)'] || 'Manual',
+        'Test Type': getIssueField(issue, 'Custom field (Test Type)') || 'Manual',
         'Story Points': storyPoints || '?', // Include Story Points if available
-        Assignee: issue['Assignee'] || 'Unassigned',
+        Assignee: getIssueField(issue, 'Assignee') || 'Unassigned',
         'Acceptance Criteria':
           acceptanceCriteria || '- Criterion 1\n- Criterion 2',
         issueKey: issueKey, // Store issue key for hyperlink
+      },
+    };
+  } else if (issueType === 'sub test execution' || issueType === 'subtestexecution') {
+    templateType = 'test';
+    return {
+      templateType,
+      data: {
+        title: summary, // Title → Summary
+        Description: description || 'Sub Test Execution description...', // Description → Description
+        'Test Type': getIssueField(issue, 'Custom field (Test Type)') || 'Manual',
+        'Story Points': storyPoints || '?', // Include Story Points if available
+        Assignee: getIssueField(issue, 'Assignee') || 'Unassigned',
+        'Acceptance Criteria':
+          acceptanceCriteria || '- Criterion 1\n- Criterion 2',
+        issueKey: issueKey, // Store issue key for hyperlink
+        originalIssueType: 'subtestexecution', // Store original type for icon styling
       },
     };
   } else if (issueType === 'theme') {
@@ -394,7 +511,7 @@ function mapJiraIssueToTemplate(issue: { [key: string]: string }): {
         title: summary, // Title → Summary
         Description: displayDescription, // Truncated description for display
         'Priority Rank':
-          issue['Priority'] || issue['Custom field (Priority Rank)'] || '#',
+          getIssueField(issue, 'Priority') || getIssueField(issue, 'Custom field (Priority Rank)') || '#',
         'Acceptance Criteria':
           acceptanceCriteria || '- Criterion 1\n- Criterion 2',
         Status: status, // Status field for display at bottom
@@ -414,7 +531,7 @@ function mapJiraIssueToTemplate(issue: { [key: string]: string }): {
         Description: displayDescription, // Truncated description for display
         Dependencies: dependencies || 'None',
         'Priority Rank':
-          issue['Priority'] || issue['Custom field (Priority Rank)'] || '#',
+          getIssueField(issue, 'Priority') || getIssueField(issue, 'Custom field (Priority Rank)') || '#',
         'Acceptance Criteria':
           acceptanceCriteria || '- Criterion 1\n- Criterion 2',
         issueKey: issueKey, // Store issue key for round-trip export
@@ -451,7 +568,7 @@ function mapJiraIssueToTemplate(issue: { [key: string]: string }): {
         title: summary, // Title → Summary
         Description: description || 'Task description...', // Description → Description
         'Story Points': storyPoints || '?', // Include Story Points if available
-        Assignee: issue['Assignee'] || 'Unassigned',
+        Assignee: getIssueField(issue, 'Assignee') || 'Unassigned',
         'Acceptance Criteria':
           acceptanceCriteria || '- Criterion 1\n- Criterion 2',
         issueKey: issueKey, // Store issue key for hyperlink
@@ -463,24 +580,38 @@ function mapJiraIssueToTemplate(issue: { [key: string]: string }): {
 
 /**
  * Extracts sprint value from a Jira issue, handling multiple sprint column variations.
+ * Parses sprint values chronologically to determine earliest or latest sprint.
+ * @param issue - The Jira issue object
+ * @param showRollingTickets - If true, returns earliest sprint chronologically (rolling tickets behavior).
+ *                            If false, returns latest sprint chronologically (most recent sprint behavior).
+ * @returns The sprint value, or 'Backlog' if none found
  */
-function getSprintValue(issue: { [key: string]: string }): string {
+function getSprintValue(issue: { [key: string]: string | string[] }, showRollingTickets: boolean = false): string {
+  const validSprintValues: string[] = [];
+  
   // Prioritize exact "Sprint" column matches first
   const exactSprintKeys = Object.keys(issue).filter(
     (key) => key.toLowerCase() === 'sprint'
   );
 
-  // Try exact "Sprint" matches first
+  // Collect all valid sprint values from exact "Sprint" matches
   for (const key of exactSprintKeys) {
     const value = issue[key];
-    if (value && value.trim() !== '') {
+    // Handle array of sprint values (from CSV parser)
+    if (Array.isArray(value)) {
+      for (const sprintValue of value) {
+        if (sprintValue && sprintValue.trim() !== '') {
+          validSprintValues.push(sprintValue.trim());
+        }
+      }
+    } else if (value && typeof value === 'string' && value.trim() !== '') {
       const trimmed = value.trim();
       if (
         trimmed.length > 0 &&
         trimmed !== '[]' &&
         !trimmed.startsWith('Checklist(') // Exclude Smart Checklist values
       ) {
-        return trimmed;
+        validSprintValues.push(trimmed);
       }
     }
   }
@@ -495,22 +626,79 @@ function getSprintValue(issue: { [key: string]: string }): string {
     );
   });
 
-  // Try each Sprint column variation
+  // Collect all valid sprint values from other sprint columns
   for (const key of sprintKeys) {
     const value = issue[key];
-    if (value && value.trim() !== '') {
+    // Handle array of sprint values (from CSV parser)
+    if (Array.isArray(value)) {
+      for (const sprintValue of value) {
+        if (sprintValue && sprintValue.trim() !== '') {
+          validSprintValues.push(sprintValue.trim());
+        }
+      }
+    } else if (value && typeof value === 'string' && value.trim() !== '') {
       const trimmed = value.trim();
       if (
         trimmed.length > 0 &&
         trimmed !== '[]' &&
         !trimmed.startsWith('Checklist(') // Exclude Smart Checklist values
       ) {
-        return trimmed;
+        validSprintValues.push(trimmed);
       }
     }
   }
 
-  return 'Backlog';
+  // If no valid sprints found, return Backlog
+  if (validSprintValues.length === 0) {
+    return 'Backlog';
+  }
+
+  // If only one sprint, return it
+  if (validSprintValues.length === 1) {
+    return validSprintValues[0];
+  }
+
+  // Parse and sort sprints chronologically by year-sprint number
+  // Format: "{Team Name} {Year}-{Sprint Number}" (e.g., "Triton 2025-1", "Triton 2025-25")
+  const sprintEntries: Array<{ sprintValue: string; year: number; sprintNumber: number; sprintKey: string }> = [];
+  
+  for (const sprintValue of validSprintValues) {
+    const parsed = parseSprintName(sprintValue);
+    if (parsed) {
+      sprintEntries.push({
+        sprintValue,
+        year: parsed.year,
+        sprintNumber: parsed.sprintNumber,
+        sprintKey: parsed.sprintKey,
+      });
+    }
+  }
+
+  // If no valid parsed sprints, fall back to original behavior (first/last in array)
+  if (sprintEntries.length === 0) {
+    if (showRollingTickets) {
+      return validSprintValues[0];
+    } else {
+      return validSprintValues[validSprintValues.length - 1];
+    }
+  }
+
+  // Sort chronologically: by year first, then sprint number
+  sprintEntries.sort((a, b) => {
+    if (a.year !== b.year) {
+      return a.year - b.year; // Earlier year comes first
+    }
+    return a.sprintNumber - b.sprintNumber; // Earlier sprint number comes first
+  });
+
+  // Return earliest (first) or latest (last) sprint chronologically
+  if (showRollingTickets) {
+    // Return earliest sprint (first chronologically) - for aging analysis
+    return sprintEntries[0].sprintValue;
+  } else {
+    // Return latest sprint (last chronologically) - for current planning
+    return sprintEntries[sprintEntries.length - 1].sprintValue;
+  }
 }
 
 /**
@@ -573,7 +761,7 @@ function calculateSprintDates(year: number, sprintNumber: number): string {
  * @param sprintKey - Optional sprint key (e.g., "2026-1") for calculation fallback
  */
 function getSprintDates(
-  issue: { [key: string]: string },
+  issue: { [key: string]: string | string[] },
   sprintKey?: string
 ): string {
   const dateKeys = Object.keys(issue).filter((key) => {
@@ -591,12 +779,14 @@ function getSprintDates(
 
   for (const key of dateKeys) {
     const value = issue[key];
-    if (value && value.trim() !== '') {
+    // Handle both string and array types
+    const stringValue = Array.isArray(value) ? value[0] : value;
+    if (stringValue && typeof stringValue === 'string' && stringValue.trim() !== '') {
       const lowerKey = key.toLowerCase();
       if (lowerKey.includes('start')) {
-        startDate = value.trim();
+        startDate = stringValue.trim();
       } else if (lowerKey.includes('end')) {
-        endDate = value.trim();
+        endDate = stringValue.trim();
       }
     }
   }
@@ -645,13 +835,17 @@ function isNumericTeamID(value: string): boolean {
  * Returns null if the format doesn't match (e.g., "Backlog" or invalid format)
  * Rejects sprint names where the team part is purely numeric (like "1.0 2025-20")
  */
-function parseSprintName(sprintName: string): {
+function parseSprintName(sprintName: string | string[] | undefined): {
   team: string;
   year: number;
   sprintNumber: number;
   sprintKey: string; // "{Year}-{Sprint Number}" for grouping concurrent sprints
 } | null {
-  if (!sprintName || sprintName.trim() === '' || sprintName === 'Backlog') {
+  // Handle array case (shouldn't happen here, but be safe)
+  if (Array.isArray(sprintName)) {
+    return null;
+  }
+  if (!sprintName || typeof sprintName !== 'string' || sprintName.trim() === '' || sprintName === 'Backlog') {
     return null;
   }
 
@@ -679,17 +873,22 @@ function parseSprintName(sprintName: string): {
 
 /**
  * Groups issues by sprint name.
+ * @param showRollingTickets - If true, uses earliest sprint; if false, uses latest sprint
  */
-function groupIssuesBySprint(issues: Array<{ [key: string]: string }>): {
-  [sprint: string]: Array<{ [key: string]: string }>;
+function groupIssuesBySprint(
+  issues: Array<{ [key: string]: string | string[] }>,
+  showRollingTickets: boolean = false
+): {
+  [sprint: string]: Array<{ [key: string]: string | string[] }>;
 } {
-  const issuesBySprint: { [sprint: string]: Array<{ [key: string]: string }> } =
+  const issuesBySprint: { [sprint: string]: Array<{ [key: string]: string | string[] }> } =
     {};
   for (const issue of issues) {
-    if (!issue['Summary'] || issue['Summary'].trim() === '') {
+    const summary = getIssueField(issue, 'Summary');
+    if (!summary || summary.trim() === '') {
       continue;
     }
-    const sprint = getSprintValue(issue);
+    const sprint = getSprintValue(issue, showRollingTickets);
     if (!issuesBySprint[sprint]) {
       issuesBySprint[sprint] = [];
     }
@@ -703,7 +902,8 @@ function groupIssuesBySprint(issues: Array<{ [key: string]: string }>): {
  * Returns organized data structure for creating swimlanes.
  */
 function preprocessMultiTeamData(
-  issues: Array<{ [key: string]: string }>,
+  issues: Array<{ [key: string]: string | string[] }>,
+  showRollingTickets: boolean = false,
   maxCardsPerColumn: number = 5,
   numFutureSprints: number = 6,
   futureSprintsColumns: number = 6
@@ -712,38 +912,39 @@ function preprocessMultiTeamData(
   sprintKeys: string[]; // Sorted list of "{Year}-{Sprint Number}" keys
   issuesByTeamAndSprint: {
     [team: string]: {
-      [sprintKey: string]: Array<{ [key: string]: string }>;
+      [sprintKey: string]: Array<{ [key: string]: string | string[] }>;
     };
   };
   issuesByTeamAndBacklog: {
-    [team: string]: Array<{ [key: string]: string }>;
+    [team: string]: Array<{ [key: string]: string | string[] }>;
   };
   sprintColumnWidths: { [sprintKey: string]: number }; // Max epics per sprint across all teams
-  epicIssues: Array<{ [key: string]: string }>;
+  epicIssues: Array<{ [key: string]: string | string[] }>;
 } {
   const sprintMap = new Map<string, ReturnType<typeof parseSprintName>>();
   const teamSet = new Set<string>();
   const issuesByTeamAndSprint: {
     [team: string]: {
-      [sprintKey: string]: Array<{ [key: string]: string }>;
+      [sprintKey: string]: Array<{ [key: string]: string | string[] }>;
     };
   } = {};
   const issuesByTeamAndBacklog: {
-    [team: string]: Array<{ [key: string]: string }>;
+    [team: string]: Array<{ [key: string]: string | string[] }>;
   } = {};
-  const epicIssues: Array<{ [key: string]: string }> = [];
+  const epicIssues: Array<{ [key: string]: string | string[] }> = [];
 
   for (const issue of issues) {
-    if (!issue['Summary'] || issue['Summary'].trim() === '') {
+    const summary = getIssueField(issue, 'Summary');
+    if (!summary || summary.trim() === '') {
       continue;
     }
 
-    const issueType = (issue['Issue Type'] || '').trim().toLowerCase();
+    const issueType = getIssueField(issue, 'Issue Type').trim().toLowerCase();
     if (issueType === 'epic') {
       epicIssues.push(issue);
     }
 
-    const sprintName = getSprintValue(issue);
+    const sprintName = getSprintValue(issue, showRollingTickets);
     const parsed = parseSprintName(sprintName);
 
     if (parsed) {
@@ -754,18 +955,15 @@ function preprocessMultiTeamData(
     // Custom field (Studio) typically contains the written team name (e.g., "Triton", "Gadget Hackwrench")
     // Custom field (Team) may contain an ID (e.g., "1039", "1040") or a name - validate it's not numeric
     let team = '';
-    if (
-      issue['Custom field (Studio)'] &&
-      issue['Custom field (Studio)'].trim() !== ''
-    ) {
-      team = issue['Custom field (Studio)'].trim();
-    } else if (
-      issue['Custom field (Team)'] &&
-      issue['Custom field (Team)'].trim() !== ''
-    ) {
-      const teamFieldValue = issue['Custom field (Team)'].trim();
-      if (!isNumericTeamID(teamFieldValue)) {
-        team = teamFieldValue;
+    const studioField = getIssueField(issue, 'Custom field (Studio)');
+    if (studioField && studioField.trim() !== '') {
+      team = studioField.trim();
+    } else {
+      const teamFieldValue = getIssueField(issue, 'Custom field (Team)');
+      if (teamFieldValue && teamFieldValue.trim() !== '') {
+        if (!isNumericTeamID(teamFieldValue.trim())) {
+          team = teamFieldValue.trim();
+        }
       }
     }
     if (!team && parsed && !isNumericTeamID(parsed.team)) {
@@ -868,9 +1066,9 @@ function preprocessMultiTeamData(
       const epicTicketCounts: { [epicKey: string]: number } = {};
       for (const issue of teamSprintIssues) {
         const epicLink =
-          issue['Custom field (Epic Link)'] ||
-          issue['Epic Link'] ||
-          issue['Epic'] ||
+          getIssueField(issue, 'Custom field (Epic Link)') ||
+          getIssueField(issue, 'Epic Link') ||
+          getIssueField(issue, 'Epic') ||
           '';
         const epicKey = epicLink.trim() || 'No Epic';
         epicTicketCounts[epicKey] = (epicTicketCounts[epicKey] || 0) + 1;
@@ -886,12 +1084,41 @@ function preprocessMultiTeamData(
     sprintColumnWidths[sprintKey] = Math.max(1, maxColumns);
   }
 
+  // Sort teams by robustness: sprint count (desc), then ticket count (desc), then name (asc)
   const teams = Array.from(teamSet)
     .filter(
       (team) =>
         team !== 'Unknown' && team.trim() !== '' && !isNumericTeamID(team)
     )
-    .sort();
+    .sort((a, b) => {
+      // Count unique sprints for each team (excluding backlog)
+      const teamASprints = issuesByTeamAndSprint[a] || {};
+      const teamBSprints = issuesByTeamAndSprint[b] || {};
+      const teamASprintCount = Object.keys(teamASprints).length;
+      const teamBSprintCount = Object.keys(teamBSprints).length;
+      
+      // Primary sort: sprint count (descending)
+      if (teamASprintCount !== teamBSprintCount) {
+        return teamBSprintCount - teamASprintCount;
+      }
+      
+      // Secondary sort: ticket count in sprints (descending, excluding backlog)
+      let teamATicketCount = 0;
+      let teamBTicketCount = 0;
+      for (const sprintKey in teamASprints) {
+        teamATicketCount += (teamASprints[sprintKey] || []).length;
+      }
+      for (const sprintKey in teamBSprints) {
+        teamBTicketCount += (teamBSprints[sprintKey] || []).length;
+      }
+      
+      if (teamATicketCount !== teamBTicketCount) {
+        return teamBTicketCount - teamATicketCount;
+      }
+      
+      // Tertiary sort: alphabetical (ascending)
+      return a.localeCompare(b);
+    });
 
   return {
     teams,
@@ -917,13 +1144,13 @@ function parseStoryPoints(value: string): number {
 /**
  * Calculates capacity per assignee for a set of issues.
  */
-function calculateCapacity(issues: { [key: string]: string }[]): {
+function calculateCapacity(issues: { [key: string]: string | string[] }[]): {
   [assignee: string]: number;
 } {
   const capacity: { [assignee: string]: number } = {};
   for (const issue of issues) {
-    const assignee = issue['Assignee'] || 'Unassigned';
-    const storyPointsStr = issue['Custom field (Story Points)'] || '';
+    const assignee = getIssueField(issue, 'Assignee') || 'Unassigned';
+    const storyPointsStr = getIssueField(issue, 'Custom field (Story Points)');
     const points = parseStoryPoints(storyPointsStr);
     capacity[assignee] = (capacity[assignee] || 0) + points;
   }
@@ -1064,7 +1291,8 @@ async function processIssueBatch(
   jiraBaseUrl?: string,
   sprint?: string,
   epicLink?: string,
-  importVerbose: boolean = true,
+  importVerbose: boolean = false,
+  showRollingTickets: boolean = false,
   maxCardsPerColumn: number = 5
 ): Promise<{ created: number; skipped: number }> {
   let created = 0;
@@ -1102,7 +1330,7 @@ async function processIssueBatch(
       );
 
       // Extract sprint from issue if not provided, or use the sprint parameter
-      const issueSprint = sprint || getSprintValue(issue);
+      const issueSprint = sprint || getSprintValue(issue, showRollingTickets);
       if (
         issueSprint &&
         issueSprint.trim() !== '' &&
@@ -1114,17 +1342,17 @@ async function processIssueBatch(
       // Extract epic link from issue if not provided, or use the epicLink parameter
       const issueEpicLink =
         epicLink ||
-        issue['Custom field (Epic Link)'] ||
-        issue['Epic Link'] ||
-        issue['Epic'] ||
+        getIssueField(issue, 'Custom field (Epic Link)') ||
+        getIssueField(issue, 'Epic Link') ||
+        getIssueField(issue, 'Epic') ||
         '';
       if (issueEpicLink && issueEpicLink.trim() !== '') {
         frame.setPluginData('epicLink', issueEpicLink.trim());
       }
 
       // Extract team/studio and team ID from issue
-      const issueStudio = issue['Custom field (Studio)'] || '';
-      const issueTeamID = issue['Custom field (Team)'] || '';
+      const issueStudio = getIssueField(issue, 'Custom field (Studio)');
+      const issueTeamID = getIssueField(issue, 'Custom field (Team)');
 
       // Store studio (team name) - prioritize Studio field, fallback to Team field if not numeric
       let issueTeam = issueStudio;
@@ -1158,7 +1386,7 @@ async function processIssueBatch(
         mapped.templateType === 'epic' ||
         mapped.templateType === 'initiative'
       ) {
-        const originalDescription = issue['Description'] || '';
+        const originalDescription = getIssueField(issue, 'Description');
         if (originalDescription && originalDescription.trim() !== '') {
           const formattedDescription = formatJiraText(originalDescription);
           frame.setPluginData('fullDescription', formattedDescription);
@@ -1197,7 +1425,7 @@ async function processIssueBatch(
         error instanceof Error ? error : new Error(String(error)),
         {
           code: errorInfo.code,
-          issueKey: issue['Issue key'],
+          issueKey: getIssueField(issue, 'Issue key'),
         }
       );
     }
@@ -1216,16 +1444,17 @@ async function processIssueBatch(
 async function processTeamSprintTickets(
   team: string,
   sprintKey: string,
-  issues: Array<{ [key: string]: string }>,
+  issues: Array<{ [key: string]: string | string[] }>,
   sprintX: number,
   startY: number,
   columnWidth: number,
-  epicIssues: Array<{ [key: string]: string }>,
+  epicIssues: Array<{ [key: string]: string | string[] }>,
   epicToFirstSprintKey: { [epicKey: string]: string },
   createdFrames: FrameNode[],
   jiraBaseUrl?: string,
   updateLastCardBottom?: (bottom: number) => void,
-  importVerbose: boolean = true,
+  importVerbose: boolean = false,
+  showRollingTickets: boolean = false,
   maxCardsPerColumn: number = 5
 ): Promise<{ maxY: number; columnsUsed: number }> {
   const spacing = LAYOUT_CONFIG.CARD_SPACING;
@@ -1233,13 +1462,13 @@ async function processTeamSprintTickets(
   const MAX_CARDS_PER_COLUMN = maxCardsPerColumn;
 
   // Group issues by epic
-  const issuesByEpic: { [epicKey: string]: Array<{ [key: string]: string }> } =
+  const issuesByEpic: { [epicKey: string]: Array<{ [key: string]: string | string[] }> } =
     {};
   for (const issue of issues) {
     const epicLink =
-      issue['Custom field (Epic Link)'] ||
-      issue['Epic Link'] ||
-      issue['Epic'] ||
+      getIssueField(issue, 'Custom field (Epic Link)') ||
+      getIssueField(issue, 'Epic Link') ||
+      getIssueField(issue, 'Epic') ||
       '';
     const epicKey = epicLink.trim() || 'No Epic';
     if (!issuesByEpic[epicKey]) {
@@ -1279,12 +1508,12 @@ async function processTeamSprintTickets(
     let currentEpicX = baseEpicX;
 
     // Find epic card to place (if any)
-    let epicCardToPlace: { [key: string]: string } | null = null;
+    let epicCardToPlace: { [key: string]: string | string[] } | null = null;
     let isFirstSprintForEpic = false;
     if (epicKey !== 'No Epic') {
       // Find the epic issue from all epic issues in the CSV
       for (const epic of epicIssues) {
-        const epicIssueKey = epic['Issue key'] || '';
+        const epicIssueKey = getIssueField(epic, 'Issue key');
         if (epicIssueKey.trim() === epicKey.trim()) {
           epicCardToPlace = epic;
           break;
@@ -1292,7 +1521,7 @@ async function processTeamSprintTickets(
       }
 
       if (epicCardToPlace) {
-        const epicIssueKey = epicCardToPlace['Issue key'] || '';
+        const epicIssueKey = getIssueField(epicCardToPlace, 'Issue key');
         const firstSprintKey = epicToFirstSprintKey[epicIssueKey];
         isFirstSprintForEpic = firstSprintKey === sprintKey;
       }
@@ -1302,12 +1531,12 @@ async function processTeamSprintTickets(
     // Full epic card appears in the first sprint, simplified labels in all sprints with tickets
     if (epicCardToPlace && epicColumnIssues.length > 0) {
       try {
-        const epicIssueKey = epicCardToPlace['Issue key'] || '';
-        const epicTitle = epicCardToPlace['Summary'] || 'Epic';
-        const epicStatus = epicCardToPlace['Status'] || 'Open';
+        const epicIssueKey = getIssueField(epicCardToPlace, 'Issue key');
+        const epicTitle = getIssueField(epicCardToPlace, 'Summary') || 'Epic';
+        const epicStatus = getIssueField(epicCardToPlace, 'Status') || 'Open';
         const epicPriorityRank =
-          epicCardToPlace['Priority'] ||
-          epicCardToPlace['Custom field (Priority Rank)'] ||
+          getIssueField(epicCardToPlace, 'Priority') ||
+          getIssueField(epicCardToPlace, 'Custom field (Priority Rank)') ||
           '#';
 
         if (isFirstSprintForEpic) {
@@ -1323,7 +1552,7 @@ async function processTeamSprintTickets(
               importVerbose
             );
 
-            const issueSprint = getSprintValue(epicCardToPlace);
+            const issueSprint = getSprintValue(epicCardToPlace, showRollingTickets);
             if (
               issueSprint &&
               issueSprint.trim() !== '' &&
@@ -1336,8 +1565,8 @@ async function processTeamSprintTickets(
             }
 
             // Extract team/studio and team ID from issue
-            const issueStudio = epicCardToPlace['Custom field (Studio)'] || '';
-            const issueTeamID = epicCardToPlace['Custom field (Team)'] || '';
+            const issueStudio = getIssueField(epicCardToPlace, 'Custom field (Studio)');
+            const issueTeamID = getIssueField(epicCardToPlace, 'Custom field (Team)');
 
             // Store studio (team name) - prioritize Studio field, fallback to Team field if not numeric
             let issueTeam = issueStudio;
@@ -1362,7 +1591,7 @@ async function processTeamSprintTickets(
               frame.setPluginData('teamID', issueTeamID.trim());
             }
 
-            const originalDescription = epicCardToPlace['Description'] || '';
+            const originalDescription = getIssueField(epicCardToPlace, 'Description');
             if (originalDescription && originalDescription.trim() !== '') {
               const formattedDescription = formatJiraText(originalDescription);
               frame.setPluginData('fullDescription', formattedDescription);
@@ -1420,9 +1649,9 @@ async function processTeamSprintTickets(
 
     // Filter out the epic issue from the list of issues to process (if it was included)
     let issuesToProcess = epicColumnIssues.filter(
-      (issue: { [key: string]: string }) => {
-        const issueType = (issue['Issue Type'] || '').trim().toLowerCase();
-        const issueKey = issue['Issue key'] || '';
+      (issue: { [key: string]: string | string[] }) => {
+        const issueType = getIssueField(issue, 'Issue Type').trim().toLowerCase();
+        const issueKey = getIssueField(issue, 'Issue key');
         // Exclude the epic issue itself if it matches the epic key
         if (
           epicCardToPlace &&
@@ -1438,9 +1667,9 @@ async function processTeamSprintTickets(
     // Sort by story points (highest to lowest)
     issuesToProcess.sort((a, b) => {
       const getStoryPoints = (issue: {
-        [key: string]: string;
+        [key: string]: string | string[];
       }): number | null => {
-        const storyPointsStr = issue['Custom field (Story Points)'] || '';
+        const storyPointsStr = getIssueField(issue, 'Custom field (Story Points)');
         if (
           !storyPointsStr ||
           storyPointsStr.trim() === '' ||
@@ -1499,7 +1728,7 @@ async function processTeamSprintTickets(
             importVerbose
           );
 
-          const issueSprint = getSprintValue(issue);
+          const issueSprint = getSprintValue(issue, showRollingTickets);
           if (
             issueSprint &&
             issueSprint.trim() !== '' &&
@@ -1509,17 +1738,17 @@ async function processTeamSprintTickets(
           }
 
           const issueEpicLink =
-            issue['Custom field (Epic Link)'] ||
-            issue['Epic Link'] ||
-            issue['Epic'] ||
+            getIssueField(issue, 'Custom field (Epic Link)') ||
+            getIssueField(issue, 'Epic Link') ||
+            getIssueField(issue, 'Epic') ||
             '';
           if (issueEpicLink && issueEpicLink.trim() !== '') {
             frame.setPluginData('epicLink', issueEpicLink.trim());
           }
 
           // Extract team/studio and team ID from issue
-          const issueStudio = issue['Custom field (Studio)'] || '';
-          const issueTeamID = issue['Custom field (Team)'] || '';
+          const issueStudio = getIssueField(issue, 'Custom field (Studio)');
+          const issueTeamID = getIssueField(issue, 'Custom field (Team)');
 
           // Store studio (team name) - prioritize Studio field, fallback to Team field if not numeric
           let issueTeam = issueStudio;
@@ -1549,7 +1778,7 @@ async function processTeamSprintTickets(
             mapped.templateType === 'epic' ||
             mapped.templateType === 'initiative'
           ) {
-            const originalDescription = issue['Description'] || '';
+            const originalDescription = getIssueField(issue, 'Description');
             if (originalDescription && originalDescription.trim() !== '') {
               const formattedDescription = formatJiraText(originalDescription);
               frame.setPluginData('fullDescription', formattedDescription);
@@ -1574,7 +1803,7 @@ async function processTeamSprintTickets(
             error instanceof Error ? error : new Error(String(error)),
             {
               code: errorInfo.code,
-              issueKey: issue['Issue key'],
+              issueKey: getIssueField(issue, 'Issue key'),
             }
           );
         }
@@ -1694,6 +1923,7 @@ async function importCardsFromCSV(
   csvText: string,
   jiraBaseUrl?: string,
   importVerbose: boolean = false,
+  showRollingTickets: boolean = false,
   maxCardsPerColumn: number = 5,
   numFutureSprints: number = 6,
   futureSprintsColumns: number = 6
@@ -1702,6 +1932,7 @@ async function importCardsFromCSV(
     csvTextLength: (csvText && csvText.length) || 0,
     jiraBaseUrl: jiraBaseUrl ? 'provided' : 'not provided',
     importVerbose,
+    showRollingTickets,
     maxCardsPerColumn,
     numFutureSprints,
     futureSprintsColumns,
@@ -1747,7 +1978,7 @@ async function importCardsFromCSV(
     });
   }
 
-  let issues: Array<{ [key: string]: string }>;
+  let issues: Array<{ [key: string]: string | string[] }>;
   try {
     issues = parseCSV(csvText);
     logger.info(`Parsed ${issues.length} rows from CSV`, {
@@ -1777,8 +2008,8 @@ async function importCardsFromCSV(
   // This mapping will be used during export to infer Team ID from Studio
   const studioToTeamIDMapping: { [studio: string]: string } = {};
   for (const issue of issues) {
-    const studioField = issue['Custom field (Studio)'];
-    const teamIDField = issue['Custom field (Team)'];
+    const studioField = getIssueField(issue, 'Custom field (Studio)');
+    const teamIDField = getIssueField(issue, 'Custom field (Team)');
     const studio = (studioField && studioField.trim()) || '';
     const teamID = (teamIDField && teamIDField.trim()) || '';
 
@@ -1840,6 +2071,7 @@ async function importCardsFromCSV(
     // Preprocess data for multi-team swimlane layout
     const preprocessed = preprocessMultiTeamData(
       issues,
+      showRollingTickets,
       maxCardsPerColumn,
       numFutureSprints,
       futureSprintsColumns
@@ -1874,7 +2106,7 @@ async function importCardsFromCSV(
       logger.warn('No valid sprints found', {
         sampleSprintValues: issues
           .slice(0, 10)
-          .map((issue) => getSprintValue(issue)),
+          .map((issue) => getSprintValue(issue, showRollingTickets)),
       });
       // Fall back to original single-team logic if no valid sprints
       // (Keep existing single-team code here for backward compatibility)
@@ -1884,8 +2116,8 @@ async function importCardsFromCSV(
     // Build epic to first sprint key mapping
     const epicToFirstSprintKey: { [epicKey: string]: string } = {};
     for (const epic of epicIssues) {
-      const epicKey = epic['Issue key'] || '';
-      if (!epicKey) continue;
+      const epicKey = getIssueField(epic, 'Issue key');
+      if (!epicKey || epicKey.trim() === '') continue;
 
       // Find the first sprint key (in sorted order) that has tickets linked to this epic
       for (const sprintKey of sprintKeys) {
@@ -1897,9 +2129,9 @@ async function importCardsFromCSV(
             [];
           hasLinkedTickets = teamSprintIssues.some((issue) => {
             const epicLink =
-              issue['Custom field (Epic Link)'] ||
-              issue['Epic Link'] ||
-              issue['Epic'] ||
+              getIssueField(issue, 'Custom field (Epic Link)') ||
+              getIssueField(issue, 'Epic Link') ||
+              getIssueField(issue, 'Epic') ||
               '';
             return epicLink.trim() === epicKey.trim();
           });
@@ -1934,9 +2166,9 @@ async function importCardsFromCSV(
       const backlogIssues = issuesByTeamAndBacklog[team] || [];
       // Filter out epics from backlog if they exist in sprints (same logic as below)
       const filteredBacklogIssues = backlogIssues.filter((issue) => {
-        const issueType = (issue['Issue Type'] || '').trim().toLowerCase();
+        const issueType = getIssueField(issue, 'Issue Type').trim().toLowerCase();
         if (issueType === 'epic') {
-          const epicIssueKey = issue['Issue key'] || '';
+          const epicIssueKey = getIssueField(issue, 'Issue key');
           // Exclude epics with designated sprints from backlog
           if (epicIssueKey && epicToFirstSprintKey[epicIssueKey]) {
             return false; // Exclude epic from backlog if it has a designated sprint
@@ -1949,9 +2181,9 @@ async function importCardsFromCSV(
       const epicTicketCounts: { [epicKey: string]: number } = {};
       for (const issue of filteredBacklogIssues) {
         const epicLink =
-          issue['Custom field (Epic Link)'] ||
-          issue['Epic Link'] ||
-          issue['Epic'] ||
+          getIssueField(issue, 'Custom field (Epic Link)') ||
+          getIssueField(issue, 'Epic Link') ||
+          getIssueField(issue, 'Epic') ||
           '';
         const epicKey = epicLink.trim() || 'No Epic';
         epicTicketCounts[epicKey] = (epicTicketCounts[epicKey] || 0) + 1;
@@ -2037,9 +2269,9 @@ async function importCardsFromCSV(
 
       // Filter out epics from backlog if they exist in sprints
       const filteredBacklogIssues = backlogIssues.filter((issue) => {
-        const issueType = (issue['Issue Type'] || '').trim().toLowerCase();
+        const issueType = getIssueField(issue, 'Issue Type').trim().toLowerCase();
         if (issueType === 'epic') {
-          const epicIssueKey = issue['Issue key'] || '';
+          const epicIssueKey = getIssueField(issue, 'Issue key');
           // Exclude epics with designated sprints from backlog
           if (epicIssueKey && epicToFirstSprintKey[epicIssueKey]) {
             return false; // Exclude epic from backlog if it has a designated sprint
@@ -2049,8 +2281,13 @@ async function importCardsFromCSV(
       });
 
       // Create backlog label for this team (similar to sprint labels)
+      // Format: "{Team Name} Backlog" (e.g., "Triton Backlog" or "GH Backlog")
+      let teamLabel = team;
+      if (team === 'Gadget Hackwrench') {
+        teamLabel = 'GH';
+      }
       const backlogLabel = figma.createText();
-      backlogLabel.characters = 'Backlog';
+      backlogLabel.characters = `${teamLabel} Backlog`;
       backlogLabel.fontSize = LAYOUT_CONFIG.SPRINT_LABEL_FONT_SIZE;
       try {
         backlogLabel.fontName = { family: 'Inter', style: 'Bold' };
@@ -2130,6 +2367,7 @@ async function importCardsFromCSV(
             teamLastCardBottom = Math.max(teamLastCardBottom, bottom);
           },
           importVerbose,
+          showRollingTickets,
           maxCardsPerColumn
         );
         // Track the maxY from the result (this is the actual bottom of cards in this sprint)
@@ -2307,6 +2545,7 @@ async function importCardsFromCSV(
               teamLastCardBottom = Math.max(teamLastCardBottom, bottom);
             },
             importVerbose,
+            showRollingTickets,
             maxCardsPerColumn
           );
           // Track the maxY from the result (this is the actual bottom of cards in this sprint)
@@ -2432,6 +2671,13 @@ async function importCardsFromCSV(
             totalSkipped > 0 ? `, ${totalSkipped} skipped` : ''
           }`;
     figma.notify(message, { timeout: 3000 });
+    
+    // Notify UI that import is complete so it can reset the file input
+    figma.ui.postMessage({
+      type: 'import-complete',
+      success: true,
+      message: message,
+    } as UIMessage);
   } finally {
     // Always clear importing flag, even if there was an error
     isImporting = false;
@@ -3366,11 +3612,15 @@ function exportCardsToCSV(filterNew: boolean = false): void {
       continue;
     }
     if (cardData) {
+      const frameIssueKey = frame.getPluginData('issueKey') || '';
+      const rawIssueKey = cardData.issueKey || frameIssueKey;
+      const normalizedIssueKey = rawIssueKey ? rawIssueKey.trim() : '';
+
       if (cardData.type === 'Milestone') {
         continue;
       }
 
-      if (filterNew && cardData.issueKey && cardData.issueKey.trim() !== '') {
+      if (filterNew && normalizedIssueKey) {
         continue;
       }
 
@@ -3463,9 +3713,6 @@ function exportCardsToCSV(filterNew: boolean = false): void {
         }
       }
 
-      const frameIssueKey = frame.getPluginData('issueKey') || '';
-      const finalIssueKey = cardData.issueKey || frameIssueKey;
-
       const finalSprint = cardData.sprint;
       const finalEpicLink = cardData.epicLink;
       const finalTeam = cardData.team;
@@ -3474,7 +3721,7 @@ function exportCardsToCSV(filterNew: boolean = false): void {
         type: cardData.type,
         title: title,
         fields: cardData.fields,
-        issueKey: finalIssueKey || undefined,
+        issueKey: normalizedIssueKey || undefined,
         sprint: finalSprint,
         epicLink: finalEpicLink,
         team: finalTeam,
@@ -3489,6 +3736,7 @@ function exportCardsToCSV(filterNew: boolean = false): void {
     figma.notify('❌ No template cards found on the page');
     return;
   }
+
 
   // Map fields to CSV columns (handles multiple fields mapping to same column)
   const csvColumnMap = new Map<string, string[]>();
@@ -3746,12 +3994,15 @@ figma.ui.onmessage = async (msg: PluginMessage) => {
         dataLength: msg.csvText.length,
         jiraBaseUrl: msg.jiraBaseUrl ? 'provided' : 'not provided',
         importVerbose: msg.importVerbose,
+        showRollingTickets: msg.showRollingTickets,
         maxCardsPerColumn: msg.maxCardsPerColumn,
         numFutureSprints: msg.numFutureSprints,
         futureSprintsColumns: msg.futureSprintsColumns,
       });
       const importVerbose =
         msg.importVerbose !== undefined ? msg.importVerbose : false;
+      const showRollingTickets =
+        msg.showRollingTickets !== undefined ? msg.showRollingTickets : false;
       const maxCardsPerColumn = msg.maxCardsPerColumn || 5;
       const numFutureSprints = msg.numFutureSprints || 6;
       const futureSprintsColumns = msg.futureSprintsColumns || 6;
@@ -3759,6 +4010,7 @@ figma.ui.onmessage = async (msg: PluginMessage) => {
         msg.csvText,
         msg.jiraBaseUrl,
         importVerbose,
+        showRollingTickets,
         maxCardsPerColumn,
         numFutureSprints,
         futureSprintsColumns
@@ -3774,10 +4026,18 @@ figma.ui.onmessage = async (msg: PluginMessage) => {
         }
       );
       figma.notify(`❌ Error importing CSV: ${errorInfo.message}`);
+      
+      // Notify UI that import failed so it can reset the file input
+      figma.ui.postMessage({
+        type: 'import-complete',
+        success: false,
+        message: errorInfo.message,
+      } as UIMessage);
     }
   } else if (msg.type === 'export-csv') {
     try {
       const filterNew = msg.filterNew || false;
+      logger.info('Export CSV called', { filterNew, msgFilterNew: msg.filterNew });
       exportCardsToCSV(filterNew);
     } catch (error) {
       const errorInfo = extractErrorInfo(error);
@@ -3796,12 +4056,14 @@ figma.ui.onmessage = async (msg: PluginMessage) => {
       const [
         jiraBaseUrl,
         importVerbose,
+        showRollingTickets,
         maxCardsPerColumn,
         numFutureSprints,
         futureSprintsColumns,
       ] = await Promise.all([
         figma.clientStorage.getAsync('jiraBaseUrl'),
         figma.clientStorage.getAsync('importVerbose'),
+        figma.clientStorage.getAsync('showRollingTickets'),
         figma.clientStorage.getAsync('maxCardsPerColumn'),
         figma.clientStorage.getAsync('numFutureSprints'),
         figma.clientStorage.getAsync('futureSprintsColumns'),
@@ -3810,6 +4072,7 @@ figma.ui.onmessage = async (msg: PluginMessage) => {
         type: 'settings-loaded',
         jiraBaseUrl: jiraBaseUrl || undefined,
         importVerbose: importVerbose !== undefined ? importVerbose : false,
+        showRollingTickets: showRollingTickets !== undefined ? showRollingTickets : false,
         maxCardsPerColumn: maxCardsPerColumn || 5,
         numFutureSprints: numFutureSprints || 6,
         futureSprintsColumns: futureSprintsColumns || 6,
@@ -3827,6 +4090,7 @@ figma.ui.onmessage = async (msg: PluginMessage) => {
         type: 'settings-loaded',
         jiraBaseUrl: undefined,
         importVerbose: false,
+        showRollingTickets: false,
         maxCardsPerColumn: 5,
         numFutureSprints: 6,
         futureSprintsColumns: 6,
@@ -3873,6 +4137,19 @@ figma.ui.onmessage = async (msg: PluginMessage) => {
       const errorInfo = extractErrorInfo(error);
       logger.error(
         'Error saving Import Verbose setting',
+        error instanceof Error ? error : new Error(String(error)),
+        {
+          code: errorInfo.code,
+        }
+      );
+    }
+  } else if (msg.type === 'set-show-rolling-tickets') {
+    try {
+      await figma.clientStorage.setAsync('showRollingTickets', msg.showRollingTickets);
+    } catch (error) {
+      const errorInfo = extractErrorInfo(error);
+      logger.error(
+        'Error saving Show Rolling Tickets setting',
         error instanceof Error ? error : new Error(String(error)),
         {
           code: errorInfo.code,

@@ -23,12 +23,14 @@ import { logger } from './logger';
 /**
  * Creates an icon shape based on template type.
  * @param isBug - If true, creates a bug icon (X shape) with red color
+ * @param originalIssueType - Original issue type for custom icon styling (security, internal, subtestexecution)
  */
 function createIconShape(
   templateType: keyof typeof TEMPLATES,
   iconX: number,
   iconY: number,
-  isBug: boolean = false
+  isBug: boolean = false,
+  originalIssueType?: string
 ): SceneNode {
   const iconSize = CARD_CONFIG.ICON_SIZE;
   let iconShape: SceneNode;
@@ -47,6 +49,48 @@ function createIconShape(
     bugText.x = iconX + iconSize - bugText.width;
     bugText.y = iconY + (iconSize - bugText.height) / 2;
     iconShape = bugText;
+  } else if (originalIssueType === 'security') {
+    // Security icon: Padlock emoji or text
+    const securityText = figma.createText();
+    securityText.characters = '🔒';
+    securityText.fontSize = iconSize * 0.8;
+    try {
+      securityText.fontName = { family: 'Inter', style: 'Regular' };
+    } catch (e) {
+      // Fallback if font not available
+    }
+    securityText.fills = [{ type: 'SOLID', color: { r: 0.13, g: 0.55, b: 0.13 } }];
+    securityText.x = iconX + iconSize - securityText.width;
+    securityText.y = iconY + (iconSize - securityText.height) / 2;
+    iconShape = securityText;
+  } else if (originalIssueType === 'internal') {
+    // Internal icon: Heart emoji or text
+    const internalText = figma.createText();
+    internalText.characters = '❤';
+    internalText.fontSize = iconSize * 0.8;
+    try {
+      internalText.fontName = { family: 'Inter', style: 'Regular' };
+    } catch (e) {
+      // Fallback if font not available
+    }
+    internalText.fills = [{ type: 'SOLID', color: { r: 0.13, g: 0.55, b: 0.13 } }];
+    internalText.x = iconX + iconSize - internalText.width;
+    internalText.y = iconY + (iconSize - internalText.height) / 2;
+    iconShape = internalText;
+  } else if (originalIssueType === 'subtestexecution') {
+    // Sub Test Execution icon: ">>" text (similar to bug "X")
+    const subTestText = figma.createText();
+    subTestText.characters = '>>';
+    subTestText.fontSize = iconSize * 0.7;
+    try {
+      subTestText.fontName = { family: 'Inter', style: 'Bold' };
+    } catch (e) {
+      // Fallback if font not available
+    }
+    subTestText.fills = [{ type: 'SOLID', color: { r: 0.2, g: 0.5, b: 0.9 } }];
+    subTestText.x = iconX + iconSize - subTestText.width;
+    subTestText.y = iconY + (iconSize - subTestText.height) / 2;
+    iconShape = subTestText;
   } else if (templateType === 'theme') {
     const rect = figma.createRectangle();
     rect.resize(iconSize * 1.5, iconSize * 0.6);
@@ -358,7 +402,7 @@ export async function createTemplateCardWithPosition(
   x?: number,
   y?: number,
   jiraBaseUrl?: string,
-  importVerbose: boolean = true
+  importVerbose: boolean = false
 ): Promise<FrameNode> {
   validateTemplateType(templateType);
   validateCoordinate(x, 'x');
@@ -412,6 +456,7 @@ export async function createTemplateCardWithPosition(
 
   // Check if this is a bug (stored in customData or will be in plugin data)
   const isBug = customData && customData.originalIssueType === 'bug';
+  const originalIssueType = customData && customData.originalIssueType;
   const backgroundColor = isBug
     ? { r: 0.9, g: 0.4, b: 0.4 } // Light red for bugs
     : getTemplateBackgroundColor(templateType);
@@ -464,8 +509,8 @@ export async function createTemplateCardWithPosition(
   const iconSize = CARD_CONFIG.ICON_SIZE;
   const iconX = cardWidth - CARD_CONFIG.PADDING - iconSize;
   const iconY = CARD_CONFIG.PADDING;
-  // Use the isBug variable declared above for icon styling
-  const iconShape = createIconShape(templateType, iconX, iconY, isBug);
+  // Use the isBug variable and originalIssueType for icon styling
+  const iconShape = createIconShape(templateType, iconX, iconY, isBug, originalIssueType);
   frame.appendChild(iconShape);
 
   const titleText = figma.createText();
